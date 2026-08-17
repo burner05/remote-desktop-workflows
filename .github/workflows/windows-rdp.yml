@@ -5,7 +5,7 @@ on:
 jobs:
   build:
     runs-on: windows-latest
-    timeout-minutes: 9999
+    timeout-minutes: 360
 
     steps:
       - name: Setup Cloudflared
@@ -16,36 +16,55 @@ jobs:
           Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -name "fDenyTSConnections" -Value 0
           Enable-NetFirewallRule -DisplayGroup "Remote Desktop"
           Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -name "UserAuthentication" -Value 1
-          Write-Host "✅ RDP Enabled Successfully!"
+          Write-Host "✅ RDP Enabled"
 
-      - name: Set Administrator Password
+      - name: Set Password
         run: |
           Set-LocalUser -Name "runneradmin" -Password (ConvertTo-SecureString -AsPlainText "P@ssw0rd123!" -Force)
-          Write-Host "✅ Password Configured!"
+          Write-Host "✅ Password set"
 
-      - name: Start Cloudflare Tunnel
+      - name: Start Cloudflare Tunnel and Print URL
         run: |
           Write-Host "============================================"
-          Write-Host "🚀 WINDOWS RDP - CLOUDFLARE TUNNEL"
+          Write-Host "🚀 CLOUDFLARE TUNNEL BAŞLATILIYOR"
           Write-Host "============================================"
-          Write-Host ""
-          Start-Process PowerShell -ArgumentList '-NoExit -Command "cloudflared tunnel --url tcp://localhost:3389"'
-          Start-Sleep -Seconds 15
-          Write-Host ""
-          Write-Host "✅ TUNNEL STARTED! Check separate PowerShell window for URL"
-          Write-Host ""
-          Write-Host "📋 CONNECTION DETAILS:"
-          Write-Host "   USERNAME: runneradmin"
-          Write-Host "   PASSWORD: P@ssw0rd123!"
-          Write-Host "   OS: Windows Server 2022"
-          Write-Host "   CPU: 4 cores"
-          Write-Host "   RAM: 16GB"
-          Write-Host "============================================"
-
-      - name: Keep Session Alive
-        run: |
-          Write-Host "⏳ Session Active - Keeping alive..."
+          
+          # Tunnel'i arka planda başlat ve log'u yakala
+          $job = Start-Job -ScriptBlock {
+            cloudflared tunnel --url tcp://localhost:3389 2>&1
+          }
+          
+          # URL'yi bekle (max 60 saniye)
+          $url = $null
+          for ($i = 1; $i -le 30; $i++) {
+            Start-Sleep -Seconds 2
+            $output = Receive-Job $job
+            if ($output -match 'https://([a-z0-9-]+\.trycloudflare\.com)') {
+              $url = $matches[1]
+              break
+            }
+            Write-Host "URL bekleniyor... ($i/30)"
+          }
+          
+          if ($url) {
+            Write-Host ""
+            Write-Host "============================================"
+            Write-Host "✅ TUNNEL AÇILDI!"
+            Write-Host "============================================"
+            Write-Host "HOSTNAME: $url"
+            Write-Host "USERNAME: administrator"
+            Write-Host "PASSWORD: Ananinami123@!"
+            Write-Host "============================================"
+            Write-Host ""
+            Write-Host "Mac'te şu komutu çalıştır:"
+            Write-Host "cloudflared access tcp --hostname $url --url localhost:3389"
+          } else {
+            Write-Host "❌ URL alınamadı. Log'a bak:"
+            Receive-Job $job
+          }
+          
+          # Job'u canlı tut
           while ($true) {
             Start-Sleep -Seconds 60
-            Write-Host "✓ Active - $(Get-Date -Format 'HH:mm:ss')"
+            Write-Host "✓ Aktif - $(Get-Date -Format 'HH:mm:ss')"
           }
