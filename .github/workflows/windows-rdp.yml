@@ -23,6 +23,23 @@ jobs:
           Set-LocalUser -Name "runneradmin" -Password (ConvertTo-SecureString -AsPlainText "P@ssw0rd123!" -Force)
           Write-Host "✅ Password set"
 
+      - name: Set Turkish Q Keyboard
+        run: |
+          Write-Host "Türkçe Q klavye ayarlanıyor..."
+          
+          # Dil ve klavye listesini oluştur
+          $LangList = New-WinUserLanguageList tr-TR
+          $LangList[0].InputMethodTips.Clear()
+          $LangList[0].InputMethodTips.Add("041F:0000041F")   # Türkçe Q
+          
+          Set-WinUserLanguageList -LanguageList $LangList -Force
+          
+          # Sistem yerel ayarını da Türkçe yap
+          Set-WinSystemLocale -SystemLocale tr-TR
+          Set-Culture -CultureInfo tr-TR
+          
+          Write-Host "✅ Türkçe Q klavye ayarlandı"
+
       - name: Download & Install AdsPower
         run: |
           Write-Host "AdsPower indiriliyor..."
