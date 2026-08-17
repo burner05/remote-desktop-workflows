@@ -29,20 +29,27 @@ jobs:
           Write-Host "🚀 CLOUDFLARE TUNNEL BAŞLATILIYOR"
           Write-Host "============================================"
           
-          # Log dosyasına yazarak başlat
-          $logFile = "cloudflared.log"
-          Start-Process -NoNewWindow -FilePath "cloudflared" -ArgumentList "tunnel --url tcp://localhost:3389" -RedirectStandardOutput $logFile -RedirectStandardError $logFile
+          $outLog = "cloudflared-out.log"
+          $errLog = "cloudflared-err.log"
           
-          # URL'yi bulana kadar bekle
+          # Ayrı log dosyalarına yönlendir
+          Start-Process -NoNewWindow -FilePath "cloudflared" `
+            -ArgumentList "tunnel --url tcp://localhost:3389" `
+            -RedirectStandardOutput $outLog `
+            -RedirectStandardError $errLog
+          
+          # URL'yi bekle
           $url = $null
           for ($i = 1; $i -le 40; $i++) {
             Start-Sleep -Seconds 3
-            if (Test-Path $logFile) {
-              $content = Get-Content $logFile -Raw -ErrorAction SilentlyContinue
-              if ($content -match 'https://([a-z0-9-]+\.trycloudflare\.com)') {
-                $url = $matches[1]
-                break
-              }
+            
+            $content = ""
+            if (Test-Path $outLog) { $content += Get-Content $outLog -Raw -ErrorAction SilentlyContinue }
+            if (Test-Path $errLog) { $content += Get-Content $errLog -Raw -ErrorAction SilentlyContinue }
+            
+            if ($content -match 'https://([a-z0-9-]+\.trycloudflare\.com)') {
+              $url = $matches[1]
+              break
             }
             Write-Host "URL bekleniyor... ($i/40)"
           }
@@ -61,8 +68,9 @@ jobs:
             Write-Host "cloudflared access tcp --hostname $url --url localhost:3389"
             Write-Host ""
           } else {
-            Write-Host "❌ URL alınamadı. Log içeriği:"
-            if (Test-Path $logFile) { Get-Content $logFile }
+            Write-Host "❌ URL alınamadı. Loglar:"
+            if (Test-Path $outLog) { Write-Host "--- OUT ---"; Get-Content $outLog }
+            if (Test-Path $errLog) { Write-Host "--- ERR ---"; Get-Content $errLog }
             exit 1
           }
           
