@@ -1,4 +1,4 @@
-name: WINDOWS RDP - CLOUDFLARE
+name: WINDOWS RDP - CLOUDFLARE + ADSPOWER
 on:
   workflow_dispatch
 
@@ -23,6 +23,16 @@ jobs:
           Set-LocalUser -Name "runneradmin" -Password (ConvertTo-SecureString -AsPlainText "P@ssw0rd123!" -Force)
           Write-Host "✅ Password set"
 
+      - name: Download & Install AdsPower
+        run: |
+          Write-Host "AdsPower indiriliyor..."
+          Invoke-WebRequest -Uri "https://version.adspower.net/software/win64-global/8.7.23/AdsPower-Global-8.7.23-x64.exe" -OutFile "AdsPowerSetup.exe"
+          
+          Write-Host "Kurulum başlatılıyor..."
+          Start-Process -FilePath "AdsPowerSetup.exe" -ArgumentList "/S" -Wait -NoNewWindow
+          
+          Write-Host "✅ AdsPower kuruldu"
+
       - name: Start Tunnel + Print URL
         run: |
           Write-Host "============================================"
@@ -32,13 +42,11 @@ jobs:
           $outLog = "cloudflared-out.log"
           $errLog = "cloudflared-err.log"
           
-          # Ayrı log dosyalarına yönlendir
           Start-Process -NoNewWindow -FilePath "cloudflared" `
             -ArgumentList "tunnel --url tcp://localhost:3389" `
             -RedirectStandardOutput $outLog `
             -RedirectStandardError $errLog
           
-          # URL'yi bekle
           $url = $null
           for ($i = 1; $i -le 40; $i++) {
             Start-Sleep -Seconds 3
@@ -74,7 +82,6 @@ jobs:
             exit 1
           }
           
-          # Canlı tut
           while ($true) {
             Start-Sleep -Seconds 60
             Write-Host "✓ Aktif - $(Get-Date -Format 'HH:mm:ss')"
