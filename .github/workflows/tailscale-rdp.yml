@@ -1,4 +1,4 @@
-name: SIMPLE PROXY
+name: SIMPLE SOCKS PROXY
 on:
   workflow_dispatch
 
@@ -8,52 +8,38 @@ jobs:
     timeout-minutes: 360
 
     steps:
-      - name: Install tools
+      - name: Install
         run: |
           sudo apt-get update
-          sudo apt-get install -y tinyproxy curl
-          
+          sudo apt-get install -y microsocks curl
           curl -L --output cloudflared.deb https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64.deb
           sudo dpkg -i cloudflared.deb
-          
-          echo "Port 8888" | sudo tee /etc/tinyproxy/tinyproxy.conf
-          echo "Allow 127.0.0.1" | sudo tee -a /etc/tinyproxy/tinyproxy.conf
-          sudo tinyproxy -c /etc/tinyproxy/tinyproxy.conf &
-          sleep 2
-          echo "✅ Kurulum tamam"
+          microsocks -p 1080 &
+          sleep 1
+          echo "✅ hazır"
 
-      - name: Start Tunnel
+      - name: Tunnel
         run: |
-          cloudflared tunnel --url http://localhost:8888 2>&1 | tee tunnel.log &
+          cloudflared tunnel --url tcp://localhost:1080 2>&1 | tee tunnel.log &
           
-          echo "URL bekleniyor..."
           for i in {1..40}; do
             sleep 3
-            URL=$(grep -oE 'https://[a-z0-9-]+\.trycloudflare\.com' tunnel.log | head -1)
+            URL=$(grep -oE '[a-z0-9-]+\.trycloudflare\.com' tunnel.log | head -1)
             if [ -n "$URL" ]; then
               echo ""
               echo "============================================"
               echo "✅ HAZIR"
               echo "============================================"
-              echo "Proxy Adresi : $URL"
+              echo "Hostname : $URL"
               echo ""
-              echo "Kullanım:"
-              echo "1. Tarayıcıya SwitchyOmega veya FoxyProxy kur"
-              echo "2. HTTP Proxy → Adres: $URL   Port: 443"
-              echo "3. Aktif et"
+              echo "Mac'te sadece şunu çalıştır:"
+              echo "cloudflared access tcp --hostname $URL --url localhost:1080"
+              echo ""
+              echo "Sonra tarayıcıda SOCKS5 → 127.0.0.1:1080 ayarla"
               echo "============================================"
               break
             fi
             echo "Bekleniyor... ($i/40)"
           done
           
-          if [ -z "$URL" ]; then
-            echo "❌ URL alınamadı. Log:"
-            cat tunnel.log
-            exit 1
-          fi
-          
-          while true; do
-            echo "✓ Aktif - $(date '+%H:%M:%S')"
-            sleep 60
-          done
+          while true; do sleep 60; echo "✓ Aktif"; done
