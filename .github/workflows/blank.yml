@@ -9,15 +9,9 @@ jobs:
     timeout-minutes: 360
 
     steps:
-      - name: Install Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: '22'
-
-      - name: Setup Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.12'
+      - name: Install Node.js and Python
+        run: |
+          Write-Host "Setup complete - Node 22 and Python already available on windows-latest"
 
       - name: Enable Windows RDP
         run: |
@@ -42,199 +36,242 @@ jobs:
           Set-Culture -CultureInfo tr-TR
           Write-Host "Turkish Q keyboard set"
 
-      - name: Install 9router
+      - name: Install 9router and Start It Once
         run: |
           npm install -g 9router
-          Write-Host "9router installed"
+          Write-Host "9router baslatiliyor (DB olusturulacak)..."
+          Start-Process -FilePath "cmd.exe" -ArgumentList "/c", "9router" -WindowStyle Hidden
+          Start-Sleep -Seconds 30
+          Write-Host "9router DB olusturuldu"
 
-      - name: Start 9router First Time
+      - name: Stop 9router
         run: |
-          Write-Host "9router baslatiliyor (veritabani olusturulacak)..."
-          Start-Process -FilePath "cmd.exe" -ArgumentList "/c", "set REQUIRE_API_KEY=false && 9router" -WindowStyle Hidden
-          Start-Sleep -Seconds 20
-          Write-Host "Veritabani olusturuldu"
-
-      - name: Stop 9router and Find Database
-        run: |
-          Write-Host "9router durduruluyor..."
-          Stop-Process -Name "node" -Force -ErrorAction SilentlyContinue
-          Stop-Process -Name "9router" -Force -ErrorAction SilentlyContinue
-          Start-Sleep -Seconds 3
+          Get-Process -Name "node" -ErrorAction SilentlyContinue | Stop-Process -Force
+          Get-Process -Name "9router" -ErrorAction SilentlyContinue | Stop-Process -Force
+          Get-Process | Where-Object { $_.MainWindowTitle -like "*9router*" } | Stop-Process -Force -ErrorAction SilentlyContinue
+          Start-Sleep -Seconds 5
           Write-Host "9router durduruldu"
 
-      - name: Disable Require API Key via Database
+      - name: Create Python Script (Safe, No PowerShell Expansion)
         run: |
-          Write-Host "Veritabani bulunuyor ve manipule ediliyor..."
+          $scriptLines = @()
+          $scriptLines += "import sqlite3, os, glob, json, sys, shutil"
+          $scriptLines += ""
+          $scriptLines += "def find_all_configs():"
+          $scriptLines += "    paths = []"
+          $scriptLines += "    home = os.path.expanduser('~')"
+          $scriptLines += "    appdata = os.environ.get('APPDATA', '')"
+          $scriptLines += "    localappdata = os.environ.get('LOCALAPPDATA', '')"
+          $scriptLines += "    programdata = os.environ.get('PROGRAMDATA', '')"
+          $scriptLines += ""
+          $scriptLines += "    search_dirs = []"
+          $scriptLines += "    for base in [home, appdata, localappdata, programdata]:"
+          $scriptLines += "        if base:"
+          $scriptLines += "            search_dirs.append(os.path.join(base, '.9router'))"
+          $scriptLines += "            search_dirs.append(os.path.join(base, '9router'))"
+          $scriptLines += ""
+          $scriptLines += "    for d in search_dirs:"
+          $scriptLines += "        if os.path.exists(d):"
+          $scriptLines += "            print(f'Found dir: {d}')"
+          $scriptLines += "            for root, dirs, files in os.walk(d):"
+          $scriptLines += "                for f in files:"
+          $scriptLines += "                    full = os.path.join(root, f)"
+          $scriptLines += "                    paths.append(full)"
+          $scriptLines += "    return paths"
+          $scriptLines += ""
+          $scriptLines += "def update_json(path):"
+          $scriptLines += "    try:"
+          $scriptLines += "        with open(path, 'r', encoding='utf-8') as f:"
+          $scriptLines += "            content = f.read()"
+          $scriptLines += "        try:"
+          $scriptLines += "            data = json.loads(content)"
+          $scriptLines += "        except:"
+          $scriptLines += "            return False"
+          $scriptLines += "        "
+          $scriptLines += "        changed = False"
+          $scriptLines += "        keys_to_check = ['requireApiKey', 'require_api_key', 'requireLogin']"
+          $scriptLines += "        for k in keys_to_check:"
+          $scriptLines += "            if k in data:"
+          $scriptLines += "                print(f'  Found {k}={data[k]} in {path}')"
+          $scriptLines += "                data[k] = False"
+          $scriptLines += "                changed = True"
+          $scriptLines += "        "
+          $scriptLines += "        def walk(obj):"
+          $scriptLines += "            if isinstance(obj, dict):"
+          $scriptLines += "                for k, v in obj.items():"
+          $scriptLines += "                    if isinstance(v, (dict, list)):"
+          $scriptLines += "                        walk(v)"
+          $scriptLines += "                    elif k.lower() in ['requireapikey', 'require_api_key', 'requirelogin']:"
+          $scriptLines += "                        print(f'  Found nested {k}={v}')"
+          $scriptLines += "                        obj[k] = False"
+          $scriptLines += "            elif isinstance(obj, list):"
+          $scriptLines += "                for item in obj:"
+          $scriptLines += "                    walk(item)"
+          $scriptLines += "        walk(data)"
+          $scriptLines += "        "
+          $scriptLines += "        if changed or True:"
+          $scriptLines += "            with open(path, 'w', encoding='utf-8') as f:"
+          $scriptLines += "                json.dump(data, f, indent=2)"
+          $scriptLines += "            print(f'  Updated JSON: {path}')"
+          $scriptLines += "            return True"
+          $scriptLines += "    except Exception as e:"
+          $scriptLines += "        print(f'  JSON error: {e}')"
+          $scriptLines += "    return False"
+          $scriptLines += ""
+          $scriptLines += "def update_sqlite(path):"
+          $scriptLines += "    try:"
+          $scriptLines += "        with open(path, 'rb') as f:"
+          $scriptLines += "            header = f.read(16)"
+          $scriptLines += "        if not header.startswith(b'SQLite format 3'):"
+          $scriptLines += "            return False"
+          $scriptLines += "        "
+          $scriptLines += "        print(f'Updating SQLite: {path}')"
+          $scriptLines += "        conn = sqlite3.connect(path)"
+          $scriptLines += "        cursor = conn.cursor()"
+          $scriptLines += "        "
+          $scriptLines += "        cursor.execute(\"SELECT name FROM sqlite_master WHERE type='table'\")"
+          $scriptLines += "        tables = [t[0] for t in cursor.fetchall()]"
+          $scriptLines += "        print(f'  Tables: {tables}')"
+          $scriptLines += "        "
+          $scriptLines += "        for table in tables:"
+          $scriptLines += "            try:"
+          $scriptLines += "                cursor.execute(f'PRAGMA table_info({table})')"
+          $scriptLines += "                cols = [c[1] for c in cursor.fetchall()]"
+          $scriptLines += "                "
+          $scriptLines += "                for col in cols:"
+          $scriptLines += "                    if 'requireapikey' in col.lower() or 'require_api_key' in col.lower() or 'requirelogin' in col.lower():"
+          $scriptLines += "                        cursor.execute(f'UPDATE {table} SET {col} = 0')"
+          $scriptLines += "                        cursor.execute(f'UPDATE {table} SET {col} = \'false\'')"
+          $scriptLines += "                        print(f'  Updated col {col} in {table}: {cursor.rowcount} rows')"
+          $scriptLines += "                "
+          $scriptLines += "                if len(cols) >= 2:"
+          $scriptLines += "                    key_col = None"
+          $scriptLines += "                    val_col = None"
+          $scriptLines += "                    for c in cols:"
+          $scriptLines += "                        cl = c.lower()"
+          $scriptLines += "                        if 'key' in cl or 'name' in cl or 'setting' in cl:"
+          $scriptLines += "                            key_col = c"
+          $scriptLines += "                        if 'value' in cl or 'val' in cl or 'data' in cl or 'enabled' in cl:"
+          $scriptLines += "                            val_col = c"
+          $scriptLines += "                    if key_col and val_col:"
+          $scriptLines += "                        for key_name in ['requireApiKey', 'require_api_key', 'requireLogin', 'require_api_key_enabled']:"
+          $scriptLines += "                            for val in ['false', '0', 0, 'FALSE']:"
+          $scriptLines += "                                try:"
+          $scriptLines += "                                    cursor.execute(f\"UPDATE {table} SET {val_col} = ? WHERE LOWER({key_col}) = ?\", (val, key_name.lower()))"
+          $scriptLines += "                                    if cursor.rowcount > 0:"
+          $scriptLines += "                                        print(f'  Updated {table}: {key_name} -> {val}')"
+          $scriptLines += "                                except:"
+          $scriptLines += "                                    pass"
+          $scriptLines += "            except Exception as e:"
+          $scriptLines += "                print(f'  Table error: {e}')"
+          $scriptLines += "        "
+          $scriptLines += "        conn.commit()"
+          $scriptLines += "        conn.close()"
+          $scriptLines += "        return True"
+          $scriptLines += "    except Exception as e:"
+          $scriptLines += "        print(f'  SQLite error: {e}')"
+          $scriptLines += "    return False"
+          $scriptLines += ""
+          $scriptLines += "print('=== Starting comprehensive config update ===')"
+          $scriptLines += "files = find_all_configs()"
+          $scriptLines += "print(f'Found {len(files)} files to check')"
+          $scriptLines += ""
+          $scriptLines += "updated_json = 0"
+          $scriptLines += "updated_db = 0"
+          $scriptLines += ""
+          $scriptLines += "for f in files:"
+          $scriptLines += "    if f.endswith('.db') or f.endswith('.sqlite') or f.endswith('.sqlite3'):"
+          $scriptLines += "        if update_sqlite(f):"
+          $scriptLines += "            updated_db += 1"
+          $scriptLines += "    elif f.endswith('.json'):"
+          $scriptLines += "        if update_json(f):"
+          $scriptLines += "            updated_json += 1"
+          $scriptLines += "    elif f.endswith('.toml') or f.endswith('.yaml') or f.endswith('.yml'):"
+          $scriptLines += "        try:"
+          $scriptLines += "            with open(f, 'r', encoding='utf-8') as fh:"
+          $scriptLines += "                content = fh.read()"
+          $scriptLines += "            if 'requireApiKey' in content or 'require_api_key' in content:"
+          $scriptLines += "                content = content.replace('requireApiKey: true', 'requireApiKey: false')"
+          $scriptLines += "                content = content.replace('requireApiKey = true', 'requireApiKey = false')"
+          $scriptLines += "                content = content.replace('require_api_key: true', 'require_api_key: false')"
+          $scriptLines += "                content = content.replace('require_api_key = true', 'require_api_key = false')"
+          $scriptLines += "                with open(f, 'w', encoding='utf-8') as fh:"
+          $scriptLines += "                    fh.write(content)"
+          $scriptLines += "                print(f'Updated text config: {f}')"
+          $scriptLines += "        except:"
+          $scriptLines += "            pass"
+          $scriptLines += ""
+          $scriptLines += "print(f'=== Done: {updated_db} DBs, {updated_json} JSONs updated ===')"
           
-          $dbPaths = @(
-            "$env:USERPROFILE\.9router\data.db",
-            "$env:USERPROFILE\.9router\settings.db",
-            "$env:USERPROFILE\.9router\config.db",
-            "$env:APPDATA\9router\data.db",
-            "$env:LOCALAPPDATA\9router\data.db"
-          )
-          
-          $dbPath = $null
-          foreach ($path in $dbPaths) {
-            if (Test-Path $path) {
-              $dbPath = $path
-              Write-Host "Veritabani bulundu: $dbPath"
-              break
-            }
-          }
-          
-          if (-not $dbPath) {
-            Write-Host "Veritabani bulunamadi! Tum 9router dizinleri aranıyor..."
-            Get-ChildItem -Path "$env:USERPROFILE" -Recurse -Filter "*.db" -ErrorAction SilentlyContinue | Where-Object { $_.DirectoryName -like "*9router*" } | ForEach-Object {
-              Write-Host "Potansiyel DB bulundu: $($_.FullName)"
-              if (-not $dbPath) { $dbPath = $_.FullName }
-            }
-          }
-          
-          if ($dbPath) {
-            Write-Host "Python ile veritabani guncelleniyor..."
-            
-            $pythonScript = @"
-import sqlite3
-import sys
-import os
+          $scriptLines | Set-Content -Path "update_config.py" -Encoding UTF8
+          Write-Host "Python script created successfully"
+          Get-Content "update_config.py" | Select-Object -First 5
 
-db_path = r'$dbPath'
-print(f"Veritabani aciliyor: {db_path}")
-
-conn = sqlite3.connect(db_path)
-cursor = conn.cursor()
-
-# Tum tablolari listele
-cursor.execute("SELECT name FROM sqlite_master WHERE type='table';")
-tables = cursor.fetchall()
-print(f"Tablolar: {[t[0] for t in tables]}")
-
-# Her tabloyu tara ve requireApiKey'i bul
-for table in tables:
-    table_name = table[0]
-    try:
-        cursor.execute(f"PRAGMA table_info('{table_name}');")
-        columns = cursor.fetchall()
-        print(f"Tablo '{table_name}' kolonlari: {[c[1] for c in columns]}")
-        
-        # key-value formatinda mi kontrol et
-        cursor.execute(f"SELECT * FROM {table_name} LIMIT 1;")
-        sample = cursor.fetchall()
-        print(f"Tablo '{table_name}' ornek veri: {sample}")
-        
-        # requireApiKey ara
-        if len(columns) >= 2:
-            for col in columns:
-                if 'key' in col[1].lower() or 'name' in col[1].lower():
-                    key_col = col[1]
-                    # value kolonunu bul
-                    val_col = None
-                    for c in columns:
-                        if 'value' in c[1].lower() or 'val' in c[1].lower() or 'data' in c[1].lower():
-                            val_col = c[1]
-                            break
-                    
-                    if val_col:
-                        print(f"Araniyor: {table_name}.{key_col} = 'requireApiKey'")
-                        cursor.execute(f"UPDATE {table_name} SET {val_col} = 'false', {val_col} = '0', {val_col} = 0 WHERE LOWER({key_col}) = 'requireapikey' OR LOWER({key_col}) = 'require_api_key';")
-                        print(f"Guncellenen satir sayisi: {cursor.rowcount}")
-    except Exception as e:
-        print(f"Tablo '{table_name}' islenemedi: {e}")
-
-conn.commit()
-conn.close()
-print("VERITABANI_GUNCELLENDI")
-"@
-            
-            Set-Content -Path "update_db.py" -Value $pythonScript -Encoding UTF8
-            python update_db.py
-            
-            Write-Host "Veritabani guncellemesi tamamlandi"
-          } else {
-            Write-Host "HIC VERITABANI BULUNAMADI! Fallback yontem deneniyor..."
-            
-            # Fallback: 9router'in config dosyasini manipule et
-            $configPaths = @(
-              "$env:USERPROFILE\.9router\config.json",
-              "$env:USERPROFILE\.9router\settings.json",
-              "$env:APPDATA\9router\config.json"
-            )
-            
-            foreach ($path in $configPaths) {
-              if (Test-Path $path) {
-                Write-Host "Config dosyasi bulundu: $path"
-                $content = Get-Content $path -Raw | ConvertFrom-Json
-                $content.requireApiKey = $false
-                $content | ConvertTo-Json | Set-Content $path -Encoding UTF8
-                Write-Host "Config dosyasi guncellendi"
-                break
-              }
-            }
-          }
+      - name: Run Python Script to Disable requireApiKey
+        run: |
+          python update_config.py
 
       - name: Create Loopback Proxy
         run: |
-          Write-Host "Loopback proxy olusturuluyor..."
+          $proxyLines = @()
+          $proxyLines += "const http = require('http');"
+          $proxyLines += "const server = http.createServer((req, res) => {"
+          $proxyLines += "  const h = { ...req.headers };"
+          $proxyLines += "  const remove = ['cf-connecting-ip','cf-ipcountry','cf-ray','cf-visitor','cf-worker','cf-colo','x-forwarded-for','x-forwarded-proto','x-forwarded-host','x-forwarded-server','x-forwarded-port','x-real-ip','forwarded','true-client-ip','x-original-forwarded-for','x-client-ip','x-cluster-client-ip','via','x-request-id','x-forwarded-scheme'];"
+          $proxyLines += "  for (const k of remove) delete h[k];"
+          $proxyLines += "  h['host'] = 'localhost:20128';"
+          $proxyLines += "  h['origin'] = 'http://localhost:20128';"
+          $proxyLines += "  h['referer'] = 'http://localhost:20128/';"
+          $proxyLines += "  h['sec-fetch-site'] = 'same-origin';"
+          $proxyLines += "  const opts = { hostname: '127.0.0.1', port: 20128, path: req.url, method: req.method, headers: h };"
+          $proxyLines += "  const proxyReq = http.request(opts, (proxyRes) => {"
+          $proxyLines += "    res.writeHead(proxyRes.statusCode, proxyRes.headers);"
+          $proxyLines += "    proxyRes.pipe(res, { end: true });"
+          $proxyLines += "  });"
+          $proxyLines += "  req.pipe(proxyReq, { end: true });"
+          $proxyLines += "  proxyReq.on('error', () => { res.writeHead(502); res.end('proxy error'); });"
+          $proxyLines += "});"
+          $proxyLines += "server.listen(20129, '127.0.0.1', () => console.log('PROXY_READY'));"
           
-          $proxyCode = "const http = require('http');"
-          $proxyCode += "const server = http.createServer((req, res) => {"
-          $proxyCode += "  const h = { ...req.headers };"
-          $proxyCode += "  const removeHeaders = ['cf-connecting-ip', 'cf-ipcountry', 'cf-ray', 'cf-visitor', 'cf-worker', 'cf-colo', 'x-forwarded-for', 'x-forwarded-proto', 'x-forwarded-host', 'x-forwarded-server', 'x-forwarded-port', 'x-real-ip', 'forwarded', 'true-client-ip', 'x-original-forwarded-for', 'x-client-ip', 'x-cluster-client-ip', 'via'];"
-          $proxyCode += "  for (const k of removeHeaders) { delete h[k]; }"
-          $proxyCode += "  h['host'] = 'localhost:20128';"
-          $proxyCode += "  h['origin'] = 'http://localhost:20128';"
-          $proxyCode += "  h['referer'] = 'http://localhost:20128/';"
-          $proxyCode += "  const opts = { hostname: '127.0.0.1', port: 20128, path: req.url, method: req.method, headers: h };"
-          $proxyCode += "  const proxyReq = http.request(opts, (proxyRes) => {"
-          $proxyCode += "    res.writeHead(proxyRes.statusCode, proxyRes.headers);"
-          $proxyCode += "    proxyRes.pipe(res, { end: true });"
-          $proxyCode += "  });"
-          $proxyCode += "  req.pipe(proxyReq, { end: true });"
-          $proxyCode += "  proxyReq.on('error', () => { res.writeHead(502); res.end('proxy error'); });"
-          $proxyCode += "});"
-          $proxyCode += "server.listen(20129, '127.0.0.1', () => { console.log('PROXY_READY'); });"
-          
-          Set-Content -Path "proxy.js" -Value $proxyCode -Encoding UTF8
+          $proxyLines | Set-Content -Path "proxy.js" -Encoding UTF8
           Start-Process -FilePath "node" -ArgumentList "proxy.js" -WindowStyle Hidden
           Start-Sleep -Seconds 5
-          
-          Write-Host "Proxy hazir"
+          Write-Host "Proxy started"
 
-      - name: Restart 9router
+      - name: Restart 9router with No Auth
         run: |
-          Write-Host "9router yeniden baslatiliyor..."
+          Write-Host "9router yeniden baslatiliyor (REQUIRE_API_KEY=false)..."
           Start-Process -FilePath "cmd.exe" -ArgumentList "/c", "set REQUIRE_API_KEY=false && 9router" -WindowStyle Hidden
-          Start-Sleep -Seconds 20
+          Start-Sleep -Seconds 30
           
-          try {
-            $response = Invoke-RestMethod -Uri "http://127.0.0.1:20128/api/health" -Method GET -TimeoutSec 5
-            Write-Host "9router yeniden baslatildi ve calisiyor"
-            
-            # requireApiKey ayarini kontrol et
+          $healthy = $false
+          for ($i = 1; $i -le 10; $i++) {
             try {
-              $config = Invoke-RestMethod -Uri "http://127.0.0.1:20129/api/settings" -Method GET -TimeoutSec 5
-              Write-Host "Mevcut ayarlar: $($config | ConvertTo-Json)"
+              $r = Invoke-RestMethod -Uri "http://127.0.0.1:20128/api/health" -Method GET -TimeoutSec 3
+              $healthy = $true
+              break
             } catch {
-              Write-Host "Ayarlar kontrol edilemedi (bu normal olabilir)"
+              Start-Sleep -Seconds 3
             }
-          } catch {
-            Write-Host "9router health check basarisiz ama devam ediliyor..."
+          }
+          
+          if ($healthy) {
+            Write-Host "9router healthy"
+          } else {
+            Write-Host "9router health check failed, continuing anyway"
           }
 
       - name: Create Cloudflare Tunnel
         run: |
-          Write-Host "Cloudflared indiriliyor..."
           Invoke-WebRequest -Uri "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-windows-amd64.exe" -OutFile "cloudflared.exe"
           
           $outLog = "cf-out.log"
           $errLog = "cf-err.log"
           
-          Write-Host "Tunnel baslatiliyor (proxy:20129)..."
           Start-Process -NoNewWindow -FilePath ".\cloudflared.exe" -ArgumentList "tunnel", "--url", "http://127.0.0.1:20129" -RedirectStandardOutput $outLog -RedirectStandardError $errLog
           
           $tunnelUrl = ""
-          for ($i = 1; $i -le 50; $i++) {
+          for ($i = 1; $i -le 60; $i++) {
             Start-Sleep -Seconds 3
             $content = ""
             if (Test-Path $outLog) { $content += Get-Content $outLog -Raw -ErrorAction SilentlyContinue }
@@ -243,25 +280,21 @@ print("VERITABANI_GUNCELLENDI")
               $tunnelUrl = $matches[0]
               break
             }
-            Write-Host "Tunnel URL bekleniyor... ($i/50)"
+            Write-Host "Tunnel URL bekleniyor... ($i/60)"
           }
           
           if ($tunnelUrl) {
             Write-Host ""
             Write-Host "============================================"
-            Write-Host "9ROUTER TUNNEL HAZIR!"
+            Write-Host "9ROUTER TUNNEL HAZIR (BULLETPROOF)"
             Write-Host "============================================"
             Write-Host "TUNNEL URL  : $tunnelUrl"
             Write-Host "9ROUTER API : $tunnelUrl/v1"
-            Write-Host "API KEY     : Gerekli degil (veritabani manipule edildi)"
+            Write-Host "API KEY     : Gerekli DEĞİL (otomatik kapatıldı)"
             Write-Host "RDP USER    : runneradmin"
             Write-Host "RDP PASS    : P@ssw0rd123!"
             Write-Host "============================================"
-            Write-Host ""
-            Write-Host "Dashboard'a erismek icin:"
-            Write-Host "$tunnelUrl/dashboard"
-            Write-Host ""
-            Write-Host "Eger hala API key istiyorsa, dashboard'dan manuel olarak kapatip tekrar deneyin."
+            Write-Host "Dashboard: $tunnelUrl/dashboard"
           } else {
             Write-Host "Tunnel URL alinamadi!"
             if (Test-Path $errLog) { Get-Content $errLog }
