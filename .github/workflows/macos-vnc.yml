@@ -1,69 +1,122 @@
-name: macOS VNC - CLOUDFLARE
+name: WINDOWS RDP - 9ROUTER TUNNEL
+
 on:
   workflow_dispatch
 
 jobs:
   build:
-    runs-on: macos-latest
-    timeout-minutes: 9999
+    runs-on: windows-latest
+    timeout-minutes: 360
 
     steps:
-      - name: Install Cloudflared
-        run: |
-          brew install cloudflare/cloudflare/cloudflared
-          echo "✅ Cloudflared Installed!"
+      - name: Install Node.js (Required for 9router)
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
 
-      - name: Enable VNC/Screen Sharing
+      - name: Enable Windows RDP
         run: |
-          sudo /System/Library/CoreServices/RemoteManagement/ARDAgent.app/Contents/Resources/kickstart -activate -configure -access -on -restart -agent -privs -all -allowAccessFor -allUsers
-          sudo defaults write /var/db/launchd.db/com.apple.launchd/overrides.plist com.apple.screensharing -dict Disabled -bool false
-          echo "✅ VNC Enabled!"
+          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -name "fDenyTSConnections" -Value 0
+          Enable-NetFirewallRule -DisplayGroup "Remote Desktop"
+          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -name "UserAuthentication" -Value 1
+          Write-Host "✅ RDP Enabled"
 
-      - name: Set VNC Password (Legacy VNC)
-        shell: bash
+      - name: Set Password
         run: |
-          set -e
-          # Ensure RemoteManagement directories exist and proper ownership
-          sudo mkdir -p /Library/Preferences
-          # Use kickstart with sudo to set legacy VNC password
-          echo "P@ssw0rd123!" | sudo /System/Library/CoreServices/RemoteManagement/ARDAgent.app/Contents/Resources/kickstart \
-            -activate -configure -access -on -restart -agent -privs -all \
-            -clientopts -setvnclegacy -vnclegacy yes -setvncpw -vncpw P@ssw0rd123!
-          # Also set system VNC password key (some runners require this)
-          sudo /usr/libexec/PlistBuddy -c "Add :VNCLegacyPasswords array" /Library/Preferences/com.apple.RemoteManagement.plist 2>/dev/null || true
-          sudo /usr/libexec/PlistBuddy -c "Delete :VNCLegacyPasswords:0" /Library/Preferences/com.apple.RemoteManagement.plist 2>/dev/null || true
-          HASH=$(python3 - <<'PY'
-import sys,hashlib
-print(hashlib.md5(b"P@ssw0rd123!").hexdigest())
-PY
-)
-          sudo /usr/libexec/PlistBuddy -c "Add :VNCLegacyPasswords:0 data $(echo $HASH | xxd -r -p | base64)" /Library/Preferences/com.apple.RemoteManagement.plist
-          sudo launchctl unload /System/Library/LaunchDaemons/com.apple.screensharing.plist 2>/dev/null || true
-          sudo launchctl load -w /System/Library/LaunchDaemons/com.apple.screensharing.plist
-          echo "✅ VNC Password Set!"
+          $securePassword = ConvertTo-SecureString -AsPlainText "P@ssw0rd123!" -Force
+          Set-LocalUser -Name "runneradmin" -Password $securePassword
+          Write-Host "✅ Password set to: P@ssw0rd123!"
 
-      - name: Start Cloudflare Tunnel
+      - name: Set Turkish Q Keyboard
         run: |
-          echo "============================================"
-          echo "🚀 macOS VNC - CLOUDFLARE TUNNEL"
-          echo "============================================"
-          echo ""
-          cloudflared tunnel --url tcp://localhost:5900 > tunnel.log 2>&1 &
-          sleep 15
-          cat tunnel.log | grep -o 'https://[^[:space:]]*trycloudflare.com' || echo "Check logs for tunnel URL"
-          echo ""
-          echo "✅ TUNNEL STARTED!"
-          echo ""
-          echo "📋 CONNECTION DETAILS:"
-          echo "   PASSWORD: P@ssw0rd123!"
-          echo "   OS: macOS Monterey/Ventura"
-          echo "   Architecture: $(uname -m)"
-          echo "============================================"
+          Write-Host "Türkçe Q klavye ayarlanıyor..."
+          $LangList = New-WinUserLanguageList tr-TR
+          $LangList[0].InputMethodTips.Clear()
+          $LangList[0].InputMethodTips.Add("041F:0000041F")
+          Set-WinUserLanguageList -LanguageList $LangList -Force
+          Set-WinSystemLocale -SystemLocale tr-TR
+          Set-Culture -CultureInfo tr-TR
+          Write-Host "✅ Türkçe Q klavye ayarlandı"
 
-      - name: Keep Session Alive
+      - name: Install and Start 9router
         run: |
-          echo "⏳ Session Active - Keeping alive..."
-          while true; do
-            sleep 60
-            echo "✓ Active - $(date '+%H:%M:%S')"
-          done
+          Write-Host "9router indiriliyor ve kuruluyor..."
+          npm install -g 9router
+          
+          Write-Host "9router başlatılıyor..."
+          Start-Process -FilePath "cmd" -ArgumentList "/c", "9router" -WindowStyle Hidden
+          
+          Write-Host "9router'ın başlaması bekleniyor (30 saniye)..."
+          Start-Sleep -Seconds 30
+          
+          Write-Host "✅ 9router kuruldu ve başlatıldı"
+
+      - name: Enable Cloudflare Tunnel via 9router API
+        run: |
+          Write-Host "============================================"
+          Write-Host "🚀 9ROUTER CLOUDFLARE TUNNEL OLUŞTURULUYOR"
+          Write-Host "============================================"
+          
+          $tunnelEnabled = $false
+          $tunnelUrl = ""
+          $apiKey = ""
+          
+          Write-Host "Cloudflare Tunnel enable ediliyor..."
+          try {
+            $enableResponse = Invoke-RestMethod -Uri "http://localhost:20128/api/tunnel/cloudflare-enable" -Method POST -ContentType "application/json"
+            Write-Host "Tunnel enable response: $($enableResponse | ConvertTo-Json)"
+          } catch {
+            Write-Host "Tunnel enable hatası: $_"
+          }
+          
+          for ($i = 1; $i -le 50; $i++) {
+            Start-Sleep -Seconds 3
+            
+            try {
+              $statusResponse = Invoke-RestMethod -Uri "http://localhost:20128/api/tunnel/status" -Method GET
+              
+              if ($statusResponse.tunnel -and $statusResponse.tunnel.url) {
+                $tunnelUrl = $statusResponse.tunnel.url
+                Write-Host "✅ Tunnel URL bulundu: $tunnelUrl"
+                $tunnelEnabled = $true
+                break
+              }
+            } catch {
+              Write-Host "Status check hatası: $_"
+            }
+            
+            Write-Host "Tunnel URL bekleniyor... ($i/50)"
+          }
+          
+          Write-Host "API Key alınıyor..."
+          try {
+            $configResponse = Invoke-RestMethod -Uri "http://localhost:20128/api/config" -Method GET
+            if ($configResponse.apiKey) {
+              $apiKey = $configResponse.apiKey
+            }
+          } catch {
+            Write-Host "API Key alınamadı: $_"
+          }
+          
+          if ($tunnelEnabled -and $tunnelUrl) {
+            Write-Host ""
+            Write-Host "============================================"
+            Write-Host "✅ 9ROUTER TUNNEL HAZIR!"
+            Write-Host "============================================"
+            Write-Host "TUNNEL URL : $tunnelUrl"
+            Write-Host "API KEY    : $apiKey"
+            Write-Host "RDP USER   : runneradmin"
+            Write-Host "RDP PASS   : P@ssw0rd123!"
+            Write-Host "============================================"
+            Write-Host ""
+            Write-Host "9router Endpoint: $tunnelUrl/v1"
+            Write-Host ""
+          } else {
+            Write-Host "❌ Tunnel URL alınamadı!"
+            exit 1
+          }
+          
+          while ($true) {
+            Start-Sleep -Seconds 60
+            Write-Host "✓ Aktif - $(Get-Date -Format 'HH:mm:ss')"
+          }
