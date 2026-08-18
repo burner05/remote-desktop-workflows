@@ -13,11 +13,9 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y tinyproxy curl
           
-          # cloudflared kur
           curl -L --output cloudflared.deb https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64.deb
           sudo dpkg -i cloudflared.deb
           
-          # tinyproxy ayarla
           echo "Port 8888" | sudo tee /etc/tinyproxy/tinyproxy.conf
           echo "Allow 127.0.0.1" | sudo tee -a /etc/tinyproxy/tinyproxy.conf
           sudo tinyproxy -c /etc/tinyproxy/tinyproxy.conf &
@@ -26,12 +24,13 @@ jobs:
 
       - name: Start Tunnel
         run: |
-          cloudflared tunnel --url http://localhost:8888 > tunnel.log 2>&1 &
+          cloudflared tunnel --url http://localhost:8888 2>&1 | tee tunnel.log &
           
-          for i in {1..30}; do
-            sleep 2
-            if grep -q "trycloudflare.com" tunnel.log; then
-              URL=$(grep -o 'https://[a-z0-9-]*\.trycloudflare\.com' tunnel.log | head -1)
+          echo "URL bekleniyor..."
+          for i in {1..40}; do
+            sleep 3
+            URL=$(grep -oE 'https://[a-z0-9-]+\.trycloudflare\.com' tunnel.log | head -1)
+            if [ -n "$URL" ]; then
               echo ""
               echo "============================================"
               echo "✅ HAZIR"
@@ -45,8 +44,14 @@ jobs:
               echo "============================================"
               break
             fi
-            echo "URL bekleniyor... ($i/30)"
+            echo "Bekleniyor... ($i/40)"
           done
+          
+          if [ -z "$URL" ]; then
+            echo "❌ URL alınamadı. Log:"
+            cat tunnel.log
+            exit 1
+          fi
           
           while true; do
             echo "✓ Aktif - $(date '+%H:%M:%S')"
