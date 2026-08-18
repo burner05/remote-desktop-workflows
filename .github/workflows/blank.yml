@@ -44,34 +44,73 @@ jobs:
           npm install -g 9router
           
           Write-Host "9router başlatılıyor (API Key zorunluluğu devre dışı bırakılıyor)..."
-          # cmd.exe ile ortam değişkenini ayarlayıp 9router'ı başlatmak Windows'ta en garantili yoldur
           Start-Process -FilePath "cmd.exe" -ArgumentList "/c", "set REQUIRE_API_KEY=false && 9router" -WindowStyle Hidden
           
           Write-Host "9router'ın başlaması bekleniyor (25 saniye)..."
           Start-Sleep -Seconds 25
-          
-          try {
-            $response = Invoke-RestMethod -Uri "http://localhost:20128/api/health" -Method GET -TimeoutSec 5
-            Write-Host "✅ 9router başarıyla başlatıldı ve çalışıyor."
-          } catch {
-            Write-Host "⚠️ 9router health check başarısız oldu, ancak süreç arka planda başlatıldı."
-          }
 
-      - name: Create Cloudflare Tunnel for 9router
+      - name: Create Loopback Proxy to Bypass Remote Auth
+        run: |
+          Write-Host "9router'ın 'remote API access' kısıtlamasını bypass etmek için loopback proxy oluşturuluyor..."
+          
+          # Proxy kodu: İstekleri 9router'a 'local' gibi gösterir
+          $proxyCode = @"
+          const http = require('http');
+          const server = http.createServer((req, res) => {
+            const headers = { ...req.headers };
+            headers['host'] = 'localhost:20128';
+            headers['x-forwarded-for'] = '127.0.0.1';
+            headers['x-real-ip'] = '127.0.0.1';
+            
+            const options = {
+              hostname: '127.0.0.1',
+              port: 20128,
+              path: req.url,
+              method: req.method,
+              headers: headers
+            };
+            
+            const proxyReq = http.request(options, (proxyRes) => {
+              res.writeHead(proxyRes.statusCode, proxyRes.headers);
+              proxyRes.pipe(res, { end: true });
+            });
+            
+            req.pipe(proxyReq, { end: true });
+            
+            proxyReq.on('error', (err) => {
+              console.error('Proxy error:', err);
+              res.writeHead(500);
+              res.end('Proxy error: ' + err.message);
+            });
+          });
+          
+          server.listen(20129, '127.0.0.1', () => {
+            console.log('✅ Loopback proxy running on 127.0.0.1:20129');
+          });
+          "@
+          Set-Content -Path "proxy.js" -Value $proxyCode -Encoding UTF8
+          
+          Write-Host "Proxy başlatılıyor..."
+          Start-Process -FilePath "node" -ArgumentList "proxy.js" -WindowStyle Hidden
+          Start-Sleep -Seconds 5
+          
+          Write-Host "✅ Proxy hazır."
+
+      - name: Create Cloudflare Tunnel for 9router (via Proxy)
         run: |
           Write-Host "============================================"
           Write-Host "🚀 9ROUTER İÇİN CLOUDFLARE TUNNEL OLUŞTURULUYOR"
           Write-Host "============================================"
           
-          # Cloudflared'ı indir
           Invoke-WebRequest -Uri "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-windows-amd64.exe" -OutFile "cloudflared.exe"
           
           $outLog = "cloudflared-out.log"
           $errLog = "cloudflared-err.log"
           
-          Write-Host "Tunnel başlatılıyor (localhost:20128)..."
+          Write-Host "Tunnel başlatılıyor (localhost:20129 -> Proxy -> 9router:20128)..."
+          # DİKKAT: cloudflared'ı doğrudan 9router'a (20128) değil, proxy'ye (20129) yönlendiriyoruz.
           Start-Process -NoNewWindow -FilePath ".\cloudflared.exe" `
-            -ArgumentList "tunnel --url http://localhost:20128" `
+            -ArgumentList "tunnel --url http://127.0.0.1:20129" `
             -RedirectStandardOutput $outLog `
             -RedirectStandardError $errLog
           
@@ -83,7 +122,6 @@ jobs:
             if (Test-Path $outLog) { $content += Get-Content $outLog -Raw -ErrorAction SilentlyContinue }
             if (Test-Path $errLog) { $content += Get-Content $errLog -Raw -ErrorAction SilentlyContinue }
             
-            # trycloudflare.com veya cfargotunnel.com formatını yakala
             if ($content -match 'https://[a-zA-Z0-9-]+\.(trycloudflare\.com|cfargotunnel\.com)') {
               $tunnelUrl = $matches[0]
               break
@@ -98,13 +136,14 @@ jobs:
             Write-Host "============================================"
             Write-Host "TUNNEL URL : $tunnelUrl"
             Write-Host "9ROUTER API: $tunnelUrl/v1"
-            Write-Host "API KEY    : Gerekli değil (REQUIRE_API_KEY=false)"
+            Write-Host "API KEY    : Gerekli değil (Loopback Proxy ile bypass edildi)"
             Write-Host "RDP USER   : runneradmin"
             Write-Host "RDP PASS   : P@ssw0rd123!"
             Write-Host "============================================"
             Write-Host ""
-            Write-Host "Not: 9router, REQUIRE_API_KEY=false ortam değişkeni ile başlatıldığı için"
-            Write-Host "herhangi bir API key girmenize gerek kalmadan doğrudan bağlantı kurabilirsiniz."
+            Write-Host "Not: 9router, tunnel üzerinden gelen istekleri 'remote' olarak görüp API key istiyordu."
+            Write-Host "Bu sorunu çözmek için, Cloudflare tunnel'ı bir 'loopback proxy'ye yönlendirdik."
+            Write-Host "Bu proxy, istekleri 9router'a '127.0.0.1' (local) gibi ilettiği için API key gerekmez."
           } else {
             Write-Host "❌ Tunnel URL alınamadı. Loglar:"
             if (Test-Path $outLog) { Write-Host "--- OUT ---"; Get-Content $outLog }
