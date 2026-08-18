@@ -19,164 +19,170 @@ jobs:
           Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -name "fDenyTSConnections" -Value 0
           Enable-NetFirewallRule -DisplayGroup "Remote Desktop"
           Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -name "UserAuthentication" -Value 1
-          Write-Host "✅ RDP Enabled"
+          Write-Host "RDP Enabled"
 
       - name: Set Password
         run: |
           $securePassword = ConvertTo-SecureString -AsPlainText "P@ssw0rd123!" -Force
           Set-LocalUser -Name "runneradmin" -Password $securePassword
-          Write-Host "✅ Password set to: P@ssw0rd123!"
+          Write-Host "Password set"
 
       - name: Set Turkish Q Keyboard
         run: |
-          Write-Host "Türkçe Q klavye ayarlanıyor..."
           $LangList = New-WinUserLanguageList tr-TR
           $LangList[0].InputMethodTips.Clear()
           $LangList[0].InputMethodTips.Add("041F:0000041F")
           Set-WinUserLanguageList -LanguageList $LangList -Force
           Set-WinSystemLocale -SystemLocale tr-TR
           Set-Culture -CultureInfo tr-TR
-          Write-Host "✅ Türkçe Q klavye ayarlandı"
+          Write-Host "Turkish Q keyboard set"
 
-      - name: Install and Start 9router
+      - name: Install 9router
         run: |
-          Write-Host "9router indiriliyor..."
           npm install -g 9router
-          
-          Write-Host "9router başlatılıyor..."
+          Write-Host "9router installed"
+
+      - name: Start 9router + Proxy + Tunnel (All-in-One)
+        run: |
+          # ============================================
+          # ADIM 1: 9router'i baslat
+          # ============================================
+          Write-Host "9router baslatiliyor..."
           Start-Process -FilePath "cmd.exe" -ArgumentList "/c", "set REQUIRE_API_KEY=false && 9router" -WindowStyle Hidden
-          
-          Write-Host "9router bekleniyor (25 saniye)..."
           Start-Sleep -Seconds 25
-          
+
+          # 9router'in calistigini dogrula
           try {
-            Invoke-RestMethod -Uri "http://127.0.0.1:20128/api/health" -Method GET -TimeoutSec 5 | Out-Null
-            Write-Host "✅ 9router çalışıyor"
+            $r = Invoke-RestMethod -Uri "http://127.0.0.1:20128/api/health" -Method GET -TimeoutSec 5
+            Write-Host "9router OK"
           } catch {
-            Write-Host "⚠️ Health check başarısız, süreç devam ediyor"
+            Write-Host "9router health check basarisiz ama devam ediliyor..."
           }
 
-      - name: Create Local Proxy (Bypass Remote Auth)
-        run: |
-          Write-Host "Loopback proxy oluşturuluyor..."
-          
+          # ============================================
+          # ADIM 2: Loopback Proxy olustur (20129)
+          # Bu proxy, Cloudflare'in ekledigi TUM remote
+          # IP header'larini siler ve 9router'a istegi
+          # tamamen local (127.0.0.1) gibi iletir.
+          # ============================================
+          Write-Host "Loopback proxy olusturuluyor..."
+
           $proxyCode = @'
-const http = require('http');
+          const http = require("http");
+          const server = http.createServer((req, res) => {
+            const h = { ...req.headers };
 
-const STRIP_HEADERS = [
-  'cf-connecting-ip', 'cf-ray', 'cf-visitor', 'cf-ipcountry',
-  'x-forwarded-for', 'x-forwarded-proto', 'x-forwarded-host',
-  'x-forwarded-port', 'x-real-ip', 'true-client-ip',
-  'x-9r-real-ip', 'x-9r-peer-token', 'x-original-host',
-  'forwarded', 'via', 'x-original-url', 'x-rewrite-url'
-];
+            // Cloudflare ve diger tum remote IP header'larini SİL
+            const removeHeaders = [
+              "cf-connecting-ip", "cf-ipcountry", "cf-ray",
+              "cf-visitor", "cf-worker", "cf-colo",
+              "x-forwarded-for", "x-forwarded-proto",
+              "x-forwarded-host", "x-forwarded-server",
+              "x-forwarded-port", "x-real-ip",
+              "forwarded", "true-client-ip",
+              "x-original-forwarded-for", "x-client-ip",
+              "x-cluster-client-ip", "via"
+            ];
+            for (const k of removeHeaders) {
+              delete h[k];
+            }
 
-const server = http.createServer((clientReq, clientRes) => {
-  const headers = {};
-  for (const [key, val] of Object.entries(clientReq.headers)) {
-    if (!STRIP_HEADERS.includes(key.toLowerCase())) {
-      headers[key] = val;
-    }
-  }
-  headers['host'] = 'localhost:20128';
-  headers['origin'] = 'http://localhost:20128';
+            // Local gibi goster
+            h["host"] = "localhost:20128";
+            h["origin"] = "http://localhost:20128";
+            h["referer"] = "http://localhost:20128/";
 
-  const proxyReq = http.request({
-    hostname: '127.0.0.1',
-    port: 20128,
-    path: clientReq.url,
-    method: clientReq.method,
-    headers: headers,
-    agent: false
-  }, (proxyRes) => {
-    clientRes.writeHead(proxyRes.statusCode, proxyRes.headers);
-    proxyRes.pipe(clientRes, { end: true });
-  });
+            const opts = {
+              hostname: "127.0.0.1",
+              port: 20128,
+              path: req.url,
+              method: req.method,
+              headers: h
+            };
 
-  proxyReq.on('error', (err) => {
-    console.error('Proxy error:', err.message);
-    if (!clientRes.headersSent) {
-      clientRes.writeHead(502);
-    }
-    clientRes.end('Proxy error');
-  });
+            const proxyReq = http.request(opts, (proxyRes) => {
+              res.writeHead(proxyRes.statusCode, proxyRes.headers);
+              proxyRes.pipe(res, { end: true });
+            });
 
-  clientReq.pipe(proxyReq, { end: true });
-});
+            req.pipe(proxyReq, { end: true });
 
-server.listen(20129, '127.0.0.1', () => {
-  console.log('Proxy ready on 127.0.0.1:20129');
-});
+            proxyReq.on("error", () => {
+              res.writeHead(502);
+              res.end("proxy error");
+            });
+          });
+
+          server.listen(20129, "127.0.0.1", () => {
+            console.log("PROXY_READY");
+          });
 '@
+
           Set-Content -Path "proxy.js" -Value $proxyCode -Encoding UTF8
-          
           Start-Process -FilePath "node" -ArgumentList "proxy.js" -WindowStyle Hidden
-          Start-Sleep -Seconds 3
-          
+          Start-Sleep -Seconds 5
+
+          # Proxy'nin calistigini dogrula
           try {
-            Invoke-RestMethod -Uri "http://127.0.0.1:20129/api/health" -Method GET -TimeoutSec 5 | Out-Null
-            Write-Host "✅ Proxy çalışıyor ve 9router'a bağlanıyor"
+            $test = Invoke-RestMethod -Uri "http://127.0.0.1:20129/api/health" -Method GET -TimeoutSec 5
+            Write-Host "Proxy OK - 9router'a proxy uzerinden erisim basarili"
           } catch {
-            Write-Host "⚠️ Proxy health check başarısız"
+            Write-Host "Proxy test hatasi: $_"
           }
 
-      - name: Create Cloudflare Tunnel
-        run: |
-          Write-Host "============================================"
-          Write-Host "CLOUDFLARE TUNNEL OLUSTURULUYOR"
-          Write-Host "============================================"
-          
+          # ============================================
+          # ADIM 3: Cloudflared'i PROXY'ye (20129) bagla
+          # DİKKAT: 20128 degil, 20129!
+          # ============================================
+          Write-Host "Cloudflared indiriliyor..."
           Invoke-WebRequest -Uri "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-windows-amd64.exe" -OutFile "cloudflared.exe"
-          
+
           $outLog = "cf-out.log"
           $errLog = "cf-err.log"
-          
+
+          Write-Host "Tunnel baslatiliyor (proxy:20129)..."
           Start-Process -NoNewWindow -FilePath ".\cloudflared.exe" `
-            -ArgumentList "tunnel --url http://127.0.0.1:20129" `
+            -ArgumentList "tunnel", "--url", "http://127.0.0.1:20129" `
             -RedirectStandardOutput $outLog `
             -RedirectStandardError $errLog
-          
+
           $tunnelUrl = ""
-          for ($i = 1; $i -le 40; $i++) {
+          for ($i = 1; $i -le 50; $i++) {
             Start-Sleep -Seconds 3
+
             $content = ""
             if (Test-Path $outLog) { $content += Get-Content $outLog -Raw -ErrorAction SilentlyContinue }
             if (Test-Path $errLog) { $content += Get-Content $errLog -Raw -ErrorAction SilentlyContinue }
-            
+
             if ($content -match 'https://[a-zA-Z0-9-]+\.(trycloudflare\.com|cfargotunnel\.com)') {
               $tunnelUrl = $matches[0]
               break
             }
-            Write-Host "URL bekleniyor... ($i/40)"
+            Write-Host "Tunnel URL bekleniyor... ($i/50)"
           }
-          
+
           if ($tunnelUrl) {
             Write-Host ""
             Write-Host "============================================"
-            Write-Host "9ROUTER HAZIR"
+            Write-Host "9ROUTER TUNNEL HAZIR!"
             Write-Host "============================================"
-            Write-Host "BASE URL   : $tunnelUrl"
-            Write-Host "API URL    : $tunnelUrl/v1"
-            Write-Host "MODELS     : $tunnelUrl/v1/models"
-            Write-Host "API KEY    : Gerekli degil (proxy bypass)"
-            Write-Host "RDP USER   : runneradmin"
-            Write-Host "RDP PASS   : P@ssw0rd123!"
+            Write-Host "TUNNEL URL  : $tunnelUrl"
+            Write-Host "9ROUTER API : $tunnelUrl/v1"
+            Write-Host "API KEY     : Gerekli degil (proxy bypass)"
+            Write-Host "RDP USER    : runneradmin"
+            Write-Host "RDP PASS    : P@ssw0rd123!"
             Write-Host "============================================"
             Write-Host ""
-            Write-Host "Araciniza su endpointi girin:"
-            Write-Host "  Base URL : $tunnelUrl/v1"
-            Write-Host "  API Key  : (bos birakin veya herhangi bir sey yazin)"
-            Write-Host ""
-            Write-Host "Proxy, tum Cloudflare headerlarini temizleyip"
-            Write-Host "istegi 9router'a localhost:20128 olarak iletir."
-            Write-Host "Boylece 9router istegi 'local' olarak gorur."
+            Write-Host "ONEMLI: Bu URL'yi kullanirken API key alanini"
+            Write-Host "bos birakin veya herhangi bir deger yazin."
+            Write-Host "Proxy, 9router'a istegi local gibi ilettigi"
+            Write-Host "icin remote API key kontrolu atlanir."
           } else {
-            Write-Host "URL alinamadi!"
-            if (Test-Path $outLog) { Get-Content $outLog }
+            Write-Host "Tunnel URL alinamadi!"
             if (Test-Path $errLog) { Get-Content $errLog }
             exit 1
           }
-          
+
           while ($true) {
             Start-Sleep -Seconds 60
             Write-Host "Aktif - $(Get-Date -Format 'HH:mm:ss')"
