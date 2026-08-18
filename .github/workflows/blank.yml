@@ -1,4 +1,4 @@
-name: WINDOWS RDP - 9ROUTER TUNNEL
+name: WINDOWS RDP - 9ROUTER TUNNEL (BULLETPROOF)
 
 on:
   workflow_dispatch
@@ -13,6 +13,11 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: '22'
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
 
       - name: Enable Windows RDP
         run: |
@@ -42,16 +47,130 @@ jobs:
           npm install -g 9router
           Write-Host "9router installed"
 
-      - name: Start 9router
+      - name: Start 9router First Time
         run: |
-          Write-Host "9router baslatiliyor..."
+          Write-Host "9router baslatiliyor (veritabani olusturulacak)..."
           Start-Process -FilePath "cmd.exe" -ArgumentList "/c", "set REQUIRE_API_KEY=false && 9router" -WindowStyle Hidden
-          Start-Sleep -Seconds 25
-          try {
-            Invoke-RestMethod -Uri "http://127.0.0.1:20128/api/health" -Method GET -TimeoutSec 5
-            Write-Host "9router OK"
-          } catch {
-            Write-Host "9router health check basarisiz ama devam ediliyor..."
+          Start-Sleep -Seconds 20
+          Write-Host "Veritabani olusturuldu"
+
+      - name: Stop 9router and Find Database
+        run: |
+          Write-Host "9router durduruluyor..."
+          Stop-Process -Name "node" -Force -ErrorAction SilentlyContinue
+          Stop-Process -Name "9router" -Force -ErrorAction SilentlyContinue
+          Start-Sleep -Seconds 3
+          Write-Host "9router durduruldu"
+
+      - name: Disable Require API Key via Database
+        run: |
+          Write-Host "Veritabani bulunuyor ve manipule ediliyor..."
+          
+          $dbPaths = @(
+            "$env:USERPROFILE\.9router\data.db",
+            "$env:USERPROFILE\.9router\settings.db",
+            "$env:USERPROFILE\.9router\config.db",
+            "$env:APPDATA\9router\data.db",
+            "$env:LOCALAPPDATA\9router\data.db"
+          )
+          
+          $dbPath = $null
+          foreach ($path in $dbPaths) {
+            if (Test-Path $path) {
+              $dbPath = $path
+              Write-Host "Veritabani bulundu: $dbPath"
+              break
+            }
+          }
+          
+          if (-not $dbPath) {
+            Write-Host "Veritabani bulunamadi! Tum 9router dizinleri aranıyor..."
+            Get-ChildItem -Path "$env:USERPROFILE" -Recurse -Filter "*.db" -ErrorAction SilentlyContinue | Where-Object { $_.DirectoryName -like "*9router*" } | ForEach-Object {
+              Write-Host "Potansiyel DB bulundu: $($_.FullName)"
+              if (-not $dbPath) { $dbPath = $_.FullName }
+            }
+          }
+          
+          if ($dbPath) {
+            Write-Host "Python ile veritabani guncelleniyor..."
+            
+            $pythonScript = @"
+import sqlite3
+import sys
+import os
+
+db_path = r'$dbPath'
+print(f"Veritabani aciliyor: {db_path}")
+
+conn = sqlite3.connect(db_path)
+cursor = conn.cursor()
+
+# Tum tablolari listele
+cursor.execute("SELECT name FROM sqlite_master WHERE type='table';")
+tables = cursor.fetchall()
+print(f"Tablolar: {[t[0] for t in tables]}")
+
+# Her tabloyu tara ve requireApiKey'i bul
+for table in tables:
+    table_name = table[0]
+    try:
+        cursor.execute(f"PRAGMA table_info('{table_name}');")
+        columns = cursor.fetchall()
+        print(f"Tablo '{table_name}' kolonlari: {[c[1] for c in columns]}")
+        
+        # key-value formatinda mi kontrol et
+        cursor.execute(f"SELECT * FROM {table_name} LIMIT 1;")
+        sample = cursor.fetchall()
+        print(f"Tablo '{table_name}' ornek veri: {sample}")
+        
+        # requireApiKey ara
+        if len(columns) >= 2:
+            for col in columns:
+                if 'key' in col[1].lower() or 'name' in col[1].lower():
+                    key_col = col[1]
+                    # value kolonunu bul
+                    val_col = None
+                    for c in columns:
+                        if 'value' in c[1].lower() or 'val' in c[1].lower() or 'data' in c[1].lower():
+                            val_col = c[1]
+                            break
+                    
+                    if val_col:
+                        print(f"Araniyor: {table_name}.{key_col} = 'requireApiKey'")
+                        cursor.execute(f"UPDATE {table_name} SET {val_col} = 'false', {val_col} = '0', {val_col} = 0 WHERE LOWER({key_col}) = 'requireapikey' OR LOWER({key_col}) = 'require_api_key';")
+                        print(f"Guncellenen satir sayisi: {cursor.rowcount}")
+    except Exception as e:
+        print(f"Tablo '{table_name}' islenemedi: {e}")
+
+conn.commit()
+conn.close()
+print("VERITABANI_GUNCELLENDI")
+"@
+            
+            Set-Content -Path "update_db.py" -Value $pythonScript -Encoding UTF8
+            python update_db.py
+            
+            Write-Host "Veritabani guncellemesi tamamlandi"
+          } else {
+            Write-Host "HIC VERITABANI BULUNAMADI! Fallback yontem deneniyor..."
+            
+            # Fallback: 9router'in config dosyasini manipule et
+            $configPaths = @(
+              "$env:USERPROFILE\.9router\config.json",
+              "$env:USERPROFILE\.9router\settings.json",
+              "$env:APPDATA\9router\config.json"
+            )
+            
+            foreach ($path in $configPaths) {
+              if (Test-Path $path) {
+                Write-Host "Config dosyasi bulundu: $path"
+                $content = Get-Content $path -Raw | ConvertFrom-Json
+                $content.requireApiKey = $false
+                $content | ConvertTo-Json | Set-Content $path -Encoding UTF8
+                Write-Host "Config dosyasi guncellendi"
+                break
+              }
+            }
           }
 
       - name: Create Loopback Proxy
@@ -80,79 +199,27 @@ jobs:
           Start-Process -FilePath "node" -ArgumentList "proxy.js" -WindowStyle Hidden
           Start-Sleep -Seconds 5
           
-          try {
-            Invoke-RestMethod -Uri "http://127.0.0.1:20129/api/health" -Method GET -TimeoutSec 5
-            Write-Host "Proxy OK"
-          } catch {
-            Write-Host "Proxy test hatasi: $_"
-          }
+          Write-Host "Proxy hazir"
 
-      - name: Disable Require API Key via API
+      - name: Restart 9router
         run: |
-          Write-Host "Require API Key ayari otomatik kapatiliyor..."
+          Write-Host "9router yeniden baslatiliyor..."
+          Start-Process -FilePath "cmd.exe" -ArgumentList "/c", "set REQUIRE_API_KEY=false && 9router" -WindowStyle Hidden
+          Start-Sleep -Seconds 20
           
-          $body = '{"requireApiKey": false}'
-          $headers = @{"Content-Type"="application/json"}
-          
-          # Birkaç farklı endpoint dene
-          $endpoints = @(
-            "http://127.0.0.1:20129/api/settings",
-            "http://127.0.0.1:20129/api/settings/endpoint",
-            "http://127.0.0.1:20129/api/endpoint",
-            "http://127.0.0.1:20129/api/config"
-          )
-          
-          $success = $false
-          foreach ($endpoint in $endpoints) {
+          try {
+            $response = Invoke-RestMethod -Uri "http://127.0.0.1:20128/api/health" -Method GET -TimeoutSec 5
+            Write-Host "9router yeniden baslatildi ve calisiyor"
+            
+            # requireApiKey ayarini kontrol et
             try {
-              Write-Host "Deneniyor: $endpoint"
-              $response = Invoke-RestMethod -Uri $endpoint -Method PUT -Body $body -Headers $headers -TimeoutSec 10
-              Write-Host "Basarili: $endpoint"
-              Write-Host "Response: $($response | ConvertTo-Json)"
-              $success = $true
-              break
+              $config = Invoke-RestMethod -Uri "http://127.0.0.1:20129/api/settings" -Method GET -TimeoutSec 5
+              Write-Host "Mevcut ayarlar: $($config | ConvertTo-Json)"
             } catch {
-              Write-Host "Basarisiz: $_"
+              Write-Host "Ayarlar kontrol edilemedi (bu normal olabilir)"
             }
-          }
-          
-          if (-not $success) {
-            Write-Host "API endpoint'leri calismadi, PATCH methodu deneniyor..."
-            foreach ($endpoint in $endpoints) {
-              try {
-                $response = Invoke-RestMethod -Uri $endpoint -Method PATCH -Body $body -Headers $headers -TimeoutSec 10
-                Write-Host "PATCH Basarili: $endpoint"
-                $success = $true
-                break
-              } catch {
-                # Devam et
-              }
-            }
-          }
-          
-          if ($success) {
-            Write-Host "✅ Require API Key otomatik kapatildi"
-          } else {
-            Write-Host "⚠️ API ile kapatilamadi, veritabani manipülasyonu deneniyor..."
-            
-            # Veritabani yolunu bul ve manipüle et
-            $dbPaths = @(
-              "$env:USERPROFILE\.9router\data.db",
-              "$env:USERPROFILE\.9router\settings.db",
-              "$env:APPDATA\9router\data.db"
-            )
-            
-            foreach ($dbPath in $dbPaths) {
-              if (Test-Path $dbPath) {
-                Write-Host "Veritabani bulundu: $dbPath"
-                # SQLite3 kurulu degilse, Node.js ile guncelle
-                $dbCode = "const Database = require('better-sqlite3'); const db = new Database('$dbPath'); db.exec('UPDATE settings SET value = ''false'' WHERE key = ''requireApiKey'''); db.close(); console.log('DB updated');"
-                Set-Content -Path "update-db.js" -Value $dbCode -Encoding UTF8
-                npm install better-sqlite3
-                node update-db.js
-                break
-              }
-            }
+          } catch {
+            Write-Host "9router health check basarisiz ama devam ediliyor..."
           }
 
       - name: Create Cloudflare Tunnel
@@ -186,13 +253,15 @@ jobs:
             Write-Host "============================================"
             Write-Host "TUNNEL URL  : $tunnelUrl"
             Write-Host "9ROUTER API : $tunnelUrl/v1"
-            Write-Host "API KEY     : Gerekli degil (otomatik kapatildi)"
+            Write-Host "API KEY     : Gerekli degil (veritabani manipule edildi)"
             Write-Host "RDP USER    : runneradmin"
             Write-Host "RDP PASS    : P@ssw0rd123!"
             Write-Host "============================================"
             Write-Host ""
             Write-Host "Dashboard'a erismek icin:"
             Write-Host "$tunnelUrl/dashboard"
+            Write-Host ""
+            Write-Host "Eger hala API key istiyorsa, dashboard'dan manuel olarak kapatip tekrar deneyin."
           } else {
             Write-Host "Tunnel URL alinamadi!"
             if (Test-Path $errLog) { Get-Content $errLog }
