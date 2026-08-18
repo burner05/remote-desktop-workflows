@@ -8,22 +8,27 @@ jobs:
     timeout-minutes: 360
 
     steps:
-      - name: Setup
+      - name: Install tools
         run: |
           sudo apt-get update
-          sudo apt-get install -y tinyproxy cloudflared
-          # tinyproxy ayarı
+          sudo apt-get install -y tinyproxy curl
+          
+          # cloudflared kur
+          curl -L --output cloudflared.deb https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64.deb
+          sudo dpkg -i cloudflared.deb
+          
+          # tinyproxy ayarla
           echo "Port 8888" | sudo tee /etc/tinyproxy/tinyproxy.conf
           echo "Allow 127.0.0.1" | sudo tee -a /etc/tinyproxy/tinyproxy.conf
-          echo "Allow ::1" | sudo tee -a /etc/tinyproxy/tinyproxy.conf
-          sudo systemctl restart tinyproxy || sudo tinyproxy -c /etc/tinyproxy/tinyproxy.conf &
+          sudo tinyproxy -c /etc/tinyproxy/tinyproxy.conf &
           sleep 2
+          echo "✅ Kurulum tamam"
 
       - name: Start Tunnel
         run: |
           cloudflared tunnel --url http://localhost:8888 > tunnel.log 2>&1 &
           
-          for i in {1..25}; do
+          for i in {1..30}; do
             sleep 2
             if grep -q "trycloudflare.com" tunnel.log; then
               URL=$(grep -o 'https://[a-z0-9-]*\.trycloudflare\.com' tunnel.log | head -1)
@@ -31,15 +36,19 @@ jobs:
               echo "============================================"
               echo "✅ HAZIR"
               echo "============================================"
-              echo "Proxy Adresi: $URL"
+              echo "Proxy Adresi : $URL"
               echo ""
-              echo "Nasıl kullanılır:"
-              echo "1. Chrome/Firefox'a 'Proxy SwitchyOmega' veya 'FoxyProxy' kur"
-              echo "2. Yeni proxy ekle → HTTP → Adres: $URL  Port: 443"
+              echo "Kullanım:"
+              echo "1. Tarayıcıya SwitchyOmega veya FoxyProxy kur"
+              echo "2. HTTP Proxy → Adres: $URL   Port: 443"
               echo "3. Aktif et"
               echo "============================================"
               break
             fi
+            echo "URL bekleniyor... ($i/30)"
           done
           
-          while true; do sleep 60; echo "✓ Aktif"; done
+          while true; do
+            echo "✓ Aktif - $(date '+%H:%M:%S')"
+            sleep 60
+          done
