@@ -1,36 +1,45 @@
-name: TEMP VPN - TAILSCALE
+name: SIMPLE PROXY
 on:
   workflow_dispatch
 
 jobs:
-  vpn:
+  proxy:
     runs-on: ubuntu-latest
     timeout-minutes: 360
 
     steps:
-      - name: Install Tailscale
+      - name: Setup
         run: |
-          curl -fsSL https://tailscale.com/install.sh | sh
-          sudo tailscale up --authkey=${{ secrets.TS_AUTHKEY }} --hostname=github-vpn --accept-routes --advertise-exit-node
-          echo "✅ Tailscale bağlandı"
+          sudo apt-get update
+          sudo apt-get install -y tinyproxy cloudflared
+          # tinyproxy ayarı
+          echo "Port 8888" | sudo tee /etc/tinyproxy/tinyproxy.conf
+          echo "Allow 127.0.0.1" | sudo tee -a /etc/tinyproxy/tinyproxy.conf
+          echo "Allow ::1" | sudo tee -a /etc/tinyproxy/tinyproxy.conf
+          sudo systemctl restart tinyproxy || sudo tinyproxy -c /etc/tinyproxy/tinyproxy.conf &
+          sleep 2
 
-      - name: Show Connection Info
+      - name: Start Tunnel
         run: |
-          echo "============================================"
-          echo "✅ VPN HAZIR"
-          echo "============================================"
-          echo "Hostname : $(hostname)"
-          echo "Tailscale IP:"
-          tailscale ip -4
-          tailscale ip -6
-          echo ""
-          echo "Status:"
-          tailscale status
-          echo "============================================"
-
-      - name: Keep Alive
-        run: |
-          while true; do
-            echo "✓ Aktif - $(date '+%H:%M:%S')"
-            sleep 60
+          cloudflared tunnel --url http://localhost:8888 > tunnel.log 2>&1 &
+          
+          for i in {1..25}; do
+            sleep 2
+            if grep -q "trycloudflare.com" tunnel.log; then
+              URL=$(grep -o 'https://[a-z0-9-]*\.trycloudflare\.com' tunnel.log | head -1)
+              echo ""
+              echo "============================================"
+              echo "✅ HAZIR"
+              echo "============================================"
+              echo "Proxy Adresi: $URL"
+              echo ""
+              echo "Nasıl kullanılır:"
+              echo "1. Chrome/Firefox'a 'Proxy SwitchyOmega' veya 'FoxyProxy' kur"
+              echo "2. Yeni proxy ekle → HTTP → Adres: $URL  Port: 443"
+              echo "3. Aktif et"
+              echo "============================================"
+              break
+            fi
           done
+          
+          while true; do sleep 60; echo "✓ Aktif"; done
