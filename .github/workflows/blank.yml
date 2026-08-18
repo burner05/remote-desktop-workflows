@@ -12,7 +12,7 @@ jobs:
       - name: Install Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: '22' # Node 20 uyarılarını önlemek için stabil Node 22
+          node-version: '22'
 
       - name: Enable Windows RDP
         run: |
@@ -44,22 +44,17 @@ jobs:
           npm install -g 9router
           
           Write-Host "9router başlatılıyor (API Key zorunluluğu devre dışı bırakılıyor)..."
-          # PowerShell ile süreci REQUIRE_API_KEY=false ortam değişkeniyle başlatıyoruz
-          $psi = New-Object System.Diagnostics.ProcessStartInfo
-          $psi.FileName = "9router"
-          $psi.UseShellExecute = $false
-          $psi.CreateNoWindow = $true
-          $psi.EnvironmentVariables["REQUIRE_API_KEY"] = "false"
-          [System.Diagnostics.Process]::Start($psi) | Out-Null
+          # cmd.exe ile ortam değişkenini ayarlayıp 9router'ı başlatmak Windows'ta en garantili yoldur
+          Start-Process -FilePath "cmd.exe" -ArgumentList "/c", "set REQUIRE_API_KEY=false && 9router" -WindowStyle Hidden
           
-          Write-Host "9router'ın başlaması bekleniyor (20 saniye)..."
-          Start-Sleep -Seconds 20
+          Write-Host "9router'ın başlaması bekleniyor (25 saniye)..."
+          Start-Sleep -Seconds 25
           
           try {
             $response = Invoke-RestMethod -Uri "http://localhost:20128/api/health" -Method GET -TimeoutSec 5
             Write-Host "✅ 9router başarıyla başlatıldı ve çalışıyor."
           } catch {
-            Write-Host "⚠️ 9router health check başarısız, ancak süreç başlatıldı."
+            Write-Host "⚠️ 9router health check başarısız oldu, ancak süreç arka planda başlatıldı."
           }
 
       - name: Create Cloudflare Tunnel for 9router
