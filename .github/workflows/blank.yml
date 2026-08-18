@@ -42,125 +42,75 @@ jobs:
           npm install -g 9router
           Write-Host "9router installed"
 
-      - name: Start 9router + Proxy + Tunnel (All-in-One)
+      - name: Start 9router
         run: |
-          # ============================================
-          # ADIM 1: 9router'i baslat
-          # ============================================
           Write-Host "9router baslatiliyor..."
           Start-Process -FilePath "cmd.exe" -ArgumentList "/c", "set REQUIRE_API_KEY=false && 9router" -WindowStyle Hidden
           Start-Sleep -Seconds 25
-
-          # 9router'in calistigini dogrula
           try {
-            $r = Invoke-RestMethod -Uri "http://127.0.0.1:20128/api/health" -Method GET -TimeoutSec 5
+            Invoke-RestMethod -Uri "http://127.0.0.1:20128/api/health" -Method GET -TimeoutSec 5
             Write-Host "9router OK"
           } catch {
             Write-Host "9router health check basarisiz ama devam ediliyor..."
           }
 
-          # ============================================
-          # ADIM 2: Loopback Proxy olustur (20129)
-          # Bu proxy, Cloudflare'in ekledigi TUM remote
-          # IP header'larini siler ve 9router'a istegi
-          # tamamen local (127.0.0.1) gibi iletir.
-          # ============================================
+      - name: Create Loopback Proxy
+        run: |
           Write-Host "Loopback proxy olusturuluyor..."
-
-          $proxyCode = @'
-          const http = require("http");
-          const server = http.createServer((req, res) => {
-            const h = { ...req.headers };
-
-            // Cloudflare ve diger tum remote IP header'larini SİL
-            const removeHeaders = [
-              "cf-connecting-ip", "cf-ipcountry", "cf-ray",
-              "cf-visitor", "cf-worker", "cf-colo",
-              "x-forwarded-for", "x-forwarded-proto",
-              "x-forwarded-host", "x-forwarded-server",
-              "x-forwarded-port", "x-real-ip",
-              "forwarded", "true-client-ip",
-              "x-original-forwarded-for", "x-client-ip",
-              "x-cluster-client-ip", "via"
-            ];
-            for (const k of removeHeaders) {
-              delete h[k];
-            }
-
-            // Local gibi goster
-            h["host"] = "localhost:20128";
-            h["origin"] = "http://localhost:20128";
-            h["referer"] = "http://localhost:20128/";
-
-            const opts = {
-              hostname: "127.0.0.1",
-              port: 20128,
-              path: req.url,
-              method: req.method,
-              headers: h
-            };
-
-            const proxyReq = http.request(opts, (proxyRes) => {
-              res.writeHead(proxyRes.statusCode, proxyRes.headers);
-              proxyRes.pipe(res, { end: true });
-            });
-
-            req.pipe(proxyReq, { end: true });
-
-            proxyReq.on("error", () => {
-              res.writeHead(502);
-              res.end("proxy error");
-            });
-          });
-
-          server.listen(20129, "127.0.0.1", () => {
-            console.log("PROXY_READY");
-          });
-'@
-
+          
+          $proxyCode = "const http = require('http');"
+          $proxyCode += "const server = http.createServer((req, res) => {"
+          $proxyCode += "  const h = { ...req.headers };"
+          $proxyCode += "  const removeHeaders = ['cf-connecting-ip', 'cf-ipcountry', 'cf-ray', 'cf-visitor', 'cf-worker', 'cf-colo', 'x-forwarded-for', 'x-forwarded-proto', 'x-forwarded-host', 'x-forwarded-server', 'x-forwarded-port', 'x-real-ip', 'forwarded', 'true-client-ip', 'x-original-forwarded-for', 'x-client-ip', 'x-cluster-client-ip', 'via'];"
+          $proxyCode += "  for (const k of removeHeaders) { delete h[k]; }"
+          $proxyCode += "  h['host'] = 'localhost:20128';"
+          $proxyCode += "  h['origin'] = 'http://localhost:20128';"
+          $proxyCode += "  h['referer'] = 'http://localhost:20128/';"
+          $proxyCode += "  const opts = { hostname: '127.0.0.1', port: 20128, path: req.url, method: req.method, headers: h };"
+          $proxyCode += "  const proxyReq = http.request(opts, (proxyRes) => {"
+          $proxyCode += "    res.writeHead(proxyRes.statusCode, proxyRes.headers);"
+          $proxyCode += "    proxyRes.pipe(res, { end: true });"
+          $proxyCode += "  });"
+          $proxyCode += "  req.pipe(proxyReq, { end: true });"
+          $proxyCode += "  proxyReq.on('error', () => { res.writeHead(502); res.end('proxy error'); });"
+          $proxyCode += "});"
+          $proxyCode += "server.listen(20129, '127.0.0.1', () => { console.log('PROXY_READY'); });"
+          
           Set-Content -Path "proxy.js" -Value $proxyCode -Encoding UTF8
           Start-Process -FilePath "node" -ArgumentList "proxy.js" -WindowStyle Hidden
           Start-Sleep -Seconds 5
-
-          # Proxy'nin calistigini dogrula
+          
           try {
-            $test = Invoke-RestMethod -Uri "http://127.0.0.1:20129/api/health" -Method GET -TimeoutSec 5
-            Write-Host "Proxy OK - 9router'a proxy uzerinden erisim basarili"
+            Invoke-RestMethod -Uri "http://127.0.0.1:20129/api/health" -Method GET -TimeoutSec 5
+            Write-Host "Proxy OK"
           } catch {
             Write-Host "Proxy test hatasi: $_"
           }
 
-          # ============================================
-          # ADIM 3: Cloudflared'i PROXY'ye (20129) bagla
-          # DİKKAT: 20128 degil, 20129!
-          # ============================================
+      - name: Create Cloudflare Tunnel
+        run: |
           Write-Host "Cloudflared indiriliyor..."
           Invoke-WebRequest -Uri "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-windows-amd64.exe" -OutFile "cloudflared.exe"
-
+          
           $outLog = "cf-out.log"
           $errLog = "cf-err.log"
-
+          
           Write-Host "Tunnel baslatiliyor (proxy:20129)..."
-          Start-Process -NoNewWindow -FilePath ".\cloudflared.exe" `
-            -ArgumentList "tunnel", "--url", "http://127.0.0.1:20129" `
-            -RedirectStandardOutput $outLog `
-            -RedirectStandardError $errLog
-
+          Start-Process -NoNewWindow -FilePath ".\cloudflared.exe" -ArgumentList "tunnel", "--url", "http://127.0.0.1:20129" -RedirectStandardOutput $outLog -RedirectStandardError $errLog
+          
           $tunnelUrl = ""
           for ($i = 1; $i -le 50; $i++) {
             Start-Sleep -Seconds 3
-
             $content = ""
             if (Test-Path $outLog) { $content += Get-Content $outLog -Raw -ErrorAction SilentlyContinue }
             if (Test-Path $errLog) { $content += Get-Content $errLog -Raw -ErrorAction SilentlyContinue }
-
             if ($content -match 'https://[a-zA-Z0-9-]+\.(trycloudflare\.com|cfargotunnel\.com)') {
               $tunnelUrl = $matches[0]
               break
             }
             Write-Host "Tunnel URL bekleniyor... ($i/50)"
           }
-
+          
           if ($tunnelUrl) {
             Write-Host ""
             Write-Host "============================================"
@@ -182,7 +132,7 @@ jobs:
             if (Test-Path $errLog) { Get-Content $errLog }
             exit 1
           }
-
+          
           while ($true) {
             Start-Sleep -Seconds 60
             Write-Host "Aktif - $(Get-Date -Format 'HH:mm:ss')"
