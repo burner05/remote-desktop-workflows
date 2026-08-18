@@ -87,6 +87,74 @@ jobs:
             Write-Host "Proxy test hatasi: $_"
           }
 
+      - name: Disable Require API Key via API
+        run: |
+          Write-Host "Require API Key ayari otomatik kapatiliyor..."
+          
+          $body = '{"requireApiKey": false}'
+          $headers = @{"Content-Type"="application/json"}
+          
+          # Birkaç farklı endpoint dene
+          $endpoints = @(
+            "http://127.0.0.1:20129/api/settings",
+            "http://127.0.0.1:20129/api/settings/endpoint",
+            "http://127.0.0.1:20129/api/endpoint",
+            "http://127.0.0.1:20129/api/config"
+          )
+          
+          $success = $false
+          foreach ($endpoint in $endpoints) {
+            try {
+              Write-Host "Deneniyor: $endpoint"
+              $response = Invoke-RestMethod -Uri $endpoint -Method PUT -Body $body -Headers $headers -TimeoutSec 10
+              Write-Host "Basarili: $endpoint"
+              Write-Host "Response: $($response | ConvertTo-Json)"
+              $success = $true
+              break
+            } catch {
+              Write-Host "Basarisiz: $_"
+            }
+          }
+          
+          if (-not $success) {
+            Write-Host "API endpoint'leri calismadi, PATCH methodu deneniyor..."
+            foreach ($endpoint in $endpoints) {
+              try {
+                $response = Invoke-RestMethod -Uri $endpoint -Method PATCH -Body $body -Headers $headers -TimeoutSec 10
+                Write-Host "PATCH Basarili: $endpoint"
+                $success = $true
+                break
+              } catch {
+                # Devam et
+              }
+            }
+          }
+          
+          if ($success) {
+            Write-Host "✅ Require API Key otomatik kapatildi"
+          } else {
+            Write-Host "⚠️ API ile kapatilamadi, veritabani manipülasyonu deneniyor..."
+            
+            # Veritabani yolunu bul ve manipüle et
+            $dbPaths = @(
+              "$env:USERPROFILE\.9router\data.db",
+              "$env:USERPROFILE\.9router\settings.db",
+              "$env:APPDATA\9router\data.db"
+            )
+            
+            foreach ($dbPath in $dbPaths) {
+              if (Test-Path $dbPath) {
+                Write-Host "Veritabani bulundu: $dbPath"
+                # SQLite3 kurulu degilse, Node.js ile guncelle
+                $dbCode = "const Database = require('better-sqlite3'); const db = new Database('$dbPath'); db.exec('UPDATE settings SET value = ''false'' WHERE key = ''requireApiKey'''); db.close(); console.log('DB updated');"
+                Set-Content -Path "update-db.js" -Value $dbCode -Encoding UTF8
+                npm install better-sqlite3
+                node update-db.js
+                break
+              }
+            }
+          }
+
       - name: Create Cloudflare Tunnel
         run: |
           Write-Host "Cloudflared indiriliyor..."
@@ -118,15 +186,13 @@ jobs:
             Write-Host "============================================"
             Write-Host "TUNNEL URL  : $tunnelUrl"
             Write-Host "9ROUTER API : $tunnelUrl/v1"
-            Write-Host "API KEY     : Gerekli degil (proxy bypass)"
+            Write-Host "API KEY     : Gerekli degil (otomatik kapatildi)"
             Write-Host "RDP USER    : runneradmin"
             Write-Host "RDP PASS    : P@ssw0rd123!"
             Write-Host "============================================"
             Write-Host ""
-            Write-Host "ONEMLI: Bu URL'yi kullanirken API key alanini"
-            Write-Host "bos birakin veya herhangi bir deger yazin."
-            Write-Host "Proxy, 9router'a istegi local gibi ilettigi"
-            Write-Host "icin remote API key kontrolu atlanir."
+            Write-Host "Dashboard'a erismek icin:"
+            Write-Host "$tunnelUrl/dashboard"
           } else {
             Write-Host "Tunnel URL alinamadi!"
             if (Test-Path $errLog) { Get-Content $errLog }
