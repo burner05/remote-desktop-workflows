@@ -12,7 +12,7 @@ jobs:
       - name: Install Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: '22' # Node 20 uyarılarını önlemek için stabil Node 22 kullanılır
+          node-version: '22' # Node 20 uyarılarını önlemek için stabil Node 22
 
       - name: Enable Windows RDP
         run: |
@@ -38,13 +38,19 @@ jobs:
           Set-Culture -CultureInfo tr-TR
           Write-Host "✅ Türkçe Q klavye ayarlandı"
 
-      - name: Install and Start 9router
+      - name: Install and Start 9router (No Auth)
         run: |
           Write-Host "9router indiriliyor ve kuruluyor..."
           npm install -g 9router
           
-          Write-Host "9router başlatılıyor..."
-          Start-Process -FilePath "cmd" -ArgumentList "/c", "9router" -WindowStyle Hidden
+          Write-Host "9router başlatılıyor (API Key zorunluluğu devre dışı bırakılıyor)..."
+          # PowerShell ile süreci REQUIRE_API_KEY=false ortam değişkeniyle başlatıyoruz
+          $psi = New-Object System.Diagnostics.ProcessStartInfo
+          $psi.FileName = "9router"
+          $psi.UseShellExecute = $false
+          $psi.CreateNoWindow = $true
+          $psi.EnvironmentVariables["REQUIRE_API_KEY"] = "false"
+          [System.Diagnostics.Process]::Start($psi) | Out-Null
           
           Write-Host "9router'ın başlaması bekleniyor (20 saniye)..."
           Start-Sleep -Seconds 20
@@ -90,16 +96,6 @@ jobs:
             Write-Host "Tunnel URL bekleniyor... ($i/40)"
           }
           
-          $apiKey = "sk-9router"
-          try {
-            $config = Invoke-RestMethod -Uri "http://localhost:20128/api/config" -Method GET -TimeoutSec 5
-            if ($config.apiKey) {
-              $apiKey = $config.apiKey
-            }
-          } catch {
-            Write-Host "⚠️ API key otomatik alınamadı, varsayılan 'sk-9router' kullanılacak."
-          }
-          
           if ($tunnelUrl) {
             Write-Host ""
             Write-Host "============================================"
@@ -107,14 +103,13 @@ jobs:
             Write-Host "============================================"
             Write-Host "TUNNEL URL : $tunnelUrl"
             Write-Host "9ROUTER API: $tunnelUrl/v1"
-            Write-Host "API KEY    : $apiKey"
+            Write-Host "API KEY    : Gerekli değil (REQUIRE_API_KEY=false)"
             Write-Host "RDP USER   : runneradmin"
             Write-Host "RDP PASS   : P@ssw0rd123!"
             Write-Host "============================================"
             Write-Host ""
-            Write-Host "Not: 9router'ın dahili tunnel API'si yerel kimlik doğrulama (Unauthorized) hatası verdiğinden,"
-            Write-Host "en 'bulletproof' ve hatasız yöntem, 9router portuna (20128) doğrudan cloudflared ile tünel açmaktır."
-            Write-Host "Bu, 9router'ınıza dışarıdan erişim sağlanması açısından tam olarak aynı sonucu verir ve GitHub'da %100 çalışır."
+            Write-Host "Not: 9router, REQUIRE_API_KEY=false ortam değişkeni ile başlatıldığı için"
+            Write-Host "herhangi bir API key girmenize gerek kalmadan doğrudan bağlantı kurabilirsiniz."
           } else {
             Write-Host "❌ Tunnel URL alınamadı. Loglar:"
             if (Test-Path $outLog) { Write-Host "--- OUT ---"; Get-Content $outLog }
