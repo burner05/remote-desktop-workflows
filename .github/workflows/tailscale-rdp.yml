@@ -1,58 +1,36 @@
-name: WINDOWS RDP - TAILSCALE
+name: TEMP VPN - TAILSCALE
 on:
   workflow_dispatch
 
 jobs:
-  build:
-    runs-on: windows-latest
+  vpn:
+    runs-on: ubuntu-latest
     timeout-minutes: 360
 
     steps:
-      - name: Enable Windows RDP
-        run: |
-          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -name "fDenyTSConnections" -Value 0
-          Enable-NetFirewallRule -DisplayGroup "Remote Desktop"
-          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -name "UserAuthentication" -Value 1
-          Write-Host "✅ RDP Enabled"
-
-      - name: Set Password
-        run: |
-          Set-LocalUser -Name "runneradmin" -Password (ConvertTo-SecureString -AsPlainText "P@ssw0rd123!" -Force)
-          Write-Host "✅ Password set"
-
-      - name: Set Turkish Q Keyboard
-        run: |
-          $LangList = New-WinUserLanguageList tr-TR
-          $LangList[0].InputMethodTips.Clear()
-          $LangList[0].InputMethodTips.Add("041F:0000041F")
-          Set-WinUserLanguageList -LanguageList $LangList -Force
-          Set-WinSystemLocale -SystemLocale tr-TR
-          Set-Culture -CultureInfo tr-TR
-          Write-Host "✅ Türkçe Q klavye ayarlandı"
-
       - name: Install Tailscale
         run: |
-          Write-Host "Tailscale indiriliyor..."
-          Invoke-WebRequest -Uri "https://pkgs.tailscale.com/stable/tailscale-setup-latest-amd64.msi" -OutFile "tailscale.msi"
-          Start-Process msiexec.exe -ArgumentList '/i tailscale.msi /quiet /norestart' -Wait
-          Write-Host "✅ Tailscale kuruldu"
+          curl -fsSL https://tailscale.com/install.sh | sh
+          sudo tailscale up --authkey=${{ secrets.TS_AUTHKEY }} --hostname=github-vpn --accept-routes --advertise-exit-node
+          echo "✅ Tailscale bağlandı"
 
-      - name: Connect Tailscale
+      - name: Show Connection Info
         run: |
-          & "C:\Program Files\Tailscale\tailscale.exe" up --authkey=${{ secrets.TAILSCALE_AUTHKEY }} --hostname=github-rdp --accept-routes
-          Start-Sleep -Seconds 10
-          $ip = & "C:\Program Files\Tailscale\tailscale.exe" ip -4
-          Write-Host "============================================"
-          Write-Host "✅ TAILSCALE BAĞLANDI!"
-          Write-Host "============================================"
-          Write-Host "TAILSCALE IP : $ip"
-          Write-Host "USERNAME     : runneradmin"
-          Write-Host "PASSWORD     : P@ssw0rd123!"
-          Write-Host "============================================"
+          echo "============================================"
+          echo "✅ VPN HAZIR"
+          echo "============================================"
+          echo "Hostname : $(hostname)"
+          echo "Tailscale IP:"
+          tailscale ip -4
+          tailscale ip -6
+          echo ""
+          echo "Status:"
+          tailscale status
+          echo "============================================"
 
       - name: Keep Alive
         run: |
-          while ($true) {
-            Start-Sleep -Seconds 60
-            Write-Host "✓ Aktif - $(Get-Date -Format 'HH:mm:ss')"
-          }
+          while true; do
+            echo "✓ Aktif - $(date '+%H:%M:%S')"
+            sleep 60
+          done
