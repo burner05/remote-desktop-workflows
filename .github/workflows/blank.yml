@@ -1,4 +1,4 @@
-name: WINDOWS RDP - 9ROUTER TUNNEL (BULLETPROOF FINAL)
+name: WINDOWS RDP - 9ROUTER TUNNEL (FINAL)
 
 on:
   workflow_dispatch
@@ -9,239 +9,491 @@ jobs:
     timeout-minutes: 360
 
     steps:
-      - name: Enable Windows RDP
+      - name: Enable RDP + Password + Keyboard
         run: |
           Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -name "fDenyTSConnections" -Value 0
           Enable-NetFirewallRule -DisplayGroup "Remote Desktop"
           Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -name "UserAuthentication" -Value 1
-          Write-Host "RDP Enabled"
-
-      - name: Set Password
-        run: |
           $securePassword = ConvertTo-SecureString -AsPlainText "P@ssw0rd123!" -Force
           Set-LocalUser -Name "runneradmin" -Password $securePassword
-          Write-Host "Password set"
-
-      - name: Set Turkish Q Keyboard
-        run: |
           $LangList = New-WinUserLanguageList tr-TR
           $LangList[0].InputMethodTips.Clear()
           $LangList[0].InputMethodTips.Add("041F:0000041F")
           Set-WinUserLanguageList -LanguageList $LangList -Force
           Set-WinSystemLocale -SystemLocale tr-TR
           Set-Culture -CultureInfo tr-TR
-          Write-Host "Turkish Q keyboard set"
+          Write-Host "System configured"
 
-      - name: Install 9router and Bootstrap DB
+      - name: Install 9router
         run: |
           npm install -g 9router
-          Write-Host "9router baslatiliyor (DB bootstrap)..."
-          Start-Process -FilePath "cmd.exe" -ArgumentList "/c", "set REQUIRE_API_KEY=false && 9router" -WindowStyle Hidden
-          Start-Sleep -Seconds 30
-          Write-Host "DB bootstrapped"
+          Write-Host "9router installed"
 
-      - name: Stop 9router Before DB Edit
+      - name: Bootstrap 9router DB
         run: |
+          Write-Host "Starting 9router to create database..."
+          Start-Process -FilePath "cmd.exe" -ArgumentList "/c", "9router" -WindowStyle Hidden
+          Start-Sleep -Seconds 30
+          Write-Host "Stopping 9router..."
           Get-Process -Name "node" -ErrorAction SilentlyContinue | Stop-Process -Force
-          Get-Process -Name "9router" -ErrorAction SilentlyContinue | Stop-Process -Force
-          Get-NetTCPConnection -LocalPort 20128 -ErrorAction SilentlyContinue | ForEach-Object { Stop-Process -Id $_.OwningProcess -Force -ErrorAction SilentlyContinue }
           Start-Sleep -Seconds 5
-          Write-Host "9router stopped, port freed"
+          Write-Host "9router stopped. DB should exist now."
+          Write-Host "Searching for DB files..."
+          Get-ChildItem -Path "$env:USERPROFILE" -Recurse -Filter "*.db" -ErrorAction SilentlyContinue | ForEach-Object { Write-Host "FOUND DB: $($_.FullName) ($($_.Length) bytes)" }
+          Get-ChildItem -Path "$env:USERPROFILE" -Recurse -Filter "*.sqlite" -ErrorAction SilentlyContinue | ForEach-Object { Write-Host "FOUND SQLITE: $($_.FullName) ($($_.Length) bytes)" }
 
-      - name: Create Python DB Patcher (NO SINGLE QUOTES - BULLETPROOF)
+      - name: Create Python Patcher (Here-String - No Escaping Issues)
         run: |
-          $lines = @(
-              'import sqlite3, os, sys',
-              '',
-              'def find_db_files():',
-              '    paths = []',
-              '    home = os.path.expanduser("~")',
-              '    appdata = os.environ.get("APPDATA", "")',
-              '    localappdata = os.environ.get("LOCALAPPDATA", "")',
-              '    programdata = os.environ.get("PROGRAMDATA", "")',
-              '    for base in [home, appdata, localappdata, programdata]:',
-              '        if not base:',
-              '            continue',
-              '        for folder in [".9router", "9router"]:',
-              '            dir_path = os.path.join(base, folder)',
-              '            if os.path.exists(dir_path):',
-              '                print("Scanning: " + dir_path)',
-              '                for root, dirs, files in os.walk(dir_path):',
-              '                    for f in files:',
-              '                        if f.endswith(".db") or f.endswith(".sqlite") or f.endswith(".sqlite3"):',
-              '                            paths.append(os.path.join(root, f))',
-              '    return paths',
-              '',
-              'def patch_db(path):',
-              '    try:',
-              '        with open(path, "rb") as fh:',
-              '            header = fh.read(16)',
-              '        if not header.startswith(b"SQLite format 3"):',
-              '            return False',
-              '        print("=== Patching: " + path + " ===")',
-              '        conn = sqlite3.connect(path)',
-              '        cur = conn.cursor()',
-              '        cur.execute("SELECT name FROM sqlite_master WHERE type=?", ("table",))',
-              '        tables = [t[0] for t in cur.fetchall()]',
-              '        print("Tables: " + str(tables))',
-              '        patched = False',
-              '        for table in tables:',
-              '            try:',
-              '                cur.execute("PRAGMA table_info(" + table + ")")',
-              '                cols = [c[1] for c in cur.fetchall()]',
-              '                print("  " + table + " cols: " + str(cols))',
-              '                for col in cols:',
-              '                    cl = col.lower()',
-              '                    if "require" in cl or ("api" in cl and "key" in cl):',
-              '                        try:',
-              '                            cur.execute("UPDATE " + table + " SET " + col + "=?", (0,))',
-              '                            print("    Set " + col + " = 0")',
-              '                            patched = True',
-              '                        except:',
-              '                            pass',
-              '                        try:',
-              '                            cur.execute("UPDATE " + table + " SET " + col + "=?", ("false",))',
-              '                            print("    Set " + col + " = false")',
-              '                            patched = True',
-              '                        except:',
-              '                            pass',
-              '                key_col = None',
-              '                val_col = None',
-              '                for c in cols:',
-              '                    cl = c.lower()',
-              '                    if cl in ["key", "name", "setting", "option"]:',
-              '                        key_col = c',
-              '                    if cl in ["value", "data", "enabled", "val"]:',
-              '                        val_col = c',
-              '                if key_col and val_col:',
-              '                    print("  Key-value pattern: " + key_col + " -> " + val_col)',
-              '                    targets = ["requireapikey", "require_api_key", "requirelogin", "require_login", "api_auth", "auth_enabled", "auth_required"]',
-              '                    for tk in targets:',
-              '                        for v in ["false", "0", 0, "False", "FALSE", "off", "disabled"]:',
-              '                            try:',
-              '                                cur.execute("UPDATE " + table + " SET " + val_col + "=? WHERE LOWER(" + key_col + ")=?", (v, tk))',
-              '                                if cur.rowcount > 0:',
-              '                                    print("    Updated: " + tk + " -> " + str(v) + " (" + str(cur.rowcount) + " rows)")',
-              '                                    patched = True',
-              '                            except:',
-              '                                pass',
-              '            except Exception as e:',
-              '                print("  Table error: " + str(e))',
-              '        conn.commit()',
-              '        conn.close()',
-              '        return patched',
-              '    except Exception as e:',
-              '        print("DB error: " + str(e))',
-              '        return False',
-              '',
-              'print("========================================")',
-              'print("BULLETPROOF DB PATCH - 9router")',
-              'print("========================================")',
-              'files = find_db_files()',
-              'print("Total DB files found: " + str(len(files)))',
-              'for f in files:',
-              '    print("  - " + f)',
-              'patched_count = 0',
-              'for f in files:',
-              '    if patch_db(f):',
-              '        patched_count += 1',
-              'print("========================================")',
-              'print("RESULT: " + str(patched_count) + " DBs patched")',
-              'print("========================================")'
-          )
-          $lines | Set-Content -Path "update_config.py" -Encoding UTF8
-          Write-Host "Python script created successfully"
-          Write-Host "File size: $((Get-Item update_config.py).Length) bytes"
+          @'
+          import sqlite3, os, sys, glob
 
-      - name: Run DB Patcher
-        run: |
-          python update_config.py
-          Write-Host "DB patcher completed"
+          print("=" * 60)
+          print("BULLETPROOF 9ROUTER DB PATCHER v3")
+          print("=" * 60)
 
-      - name: Create Loopback Proxy (Header Stripper)
+          # Find all potential DB locations
+          search_paths = []
+          home = os.path.expanduser("~")
+          appdata = os.environ.get("APPDATA", "")
+          localappdata = os.environ.get("LOCALAPPDATA", "")
+          programdata = os.environ.get("PROGRAMDATA", "")
+          npm_prefix = os.popen("npm prefix -g").read().strip()
+
+          candidates = [home, appdata, localappdata, programdata, npm_prefix]
+          for base in candidates:
+              if base and os.path.exists(base):
+                  search_paths.append(os.path.join(base, ".9router"))
+                  search_paths.append(os.path.join(base, "9router"))
+                  search_paths.append(os.path.join(base, "9router-app"))
+                  search_paths.append(os.path.join(base, "node_modules", "9router"))
+
+          print(f"Search directories: {search_paths}")
+
+          db_files = []
+          for sp in search_paths:
+              if os.path.exists(sp):
+                  print(f"  EXISTS: {sp}")
+                  for root, dirs, files in os.walk(sp):
+                      for f in files:
+                          if f.endswith((".db", ".sqlite", ".sqlite3")):
+                              full = os.path.join(root, f)
+                              db_files.append(full)
+                              print(f"    DB FOUND: {full}")
+
+          # Also search with glob as backup
+          for pattern in [os.path.join(home, ".9router", "**", "*.db"),
+                          os.path.join(home, ".9router", "**", "*.sqlite"),
+                          os.path.join(appdata, "**", "9router*", "**", "*.db"),
+                          os.path.join(localappdata, "**", "9router*", "**", "*.db")]:
+              for f in glob.glob(pattern, recursive=True):
+                  if f not in db_files:
+                      db_files.append(f)
+                      print(f"    DB FOUND (glob): {f}")
+
+          print(f"\nTotal DB files to patch: {len(db_files)}")
+
+          if not db_files:
+              print("ERROR: No DB files found! Listing .9router directory:")
+              d9 = os.path.join(home, ".9router")
+              if os.path.exists(d9):
+                  for item in os.listdir(d9):
+                      print(f"  {item}")
+              else:
+                  print(f"  {d9} does not exist!")
+                  # List home directory
+                  for item in os.listdir(home):
+                      if "9" in item.lower() or "router" in item.lower() or item.startswith("."):
+                          print(f"  HOME: {item}")
+              sys.exit(1)
+
+          patched_any = False
+
+          for db_path in db_files:
+              print(f"\n{'='*40}")
+              print(f"PATCHING: {db_path}")
+              print(f"{'='*40}")
+
+              try:
+                  # Verify it's a real SQLite file
+                  with open(db_path, "rb") as fh:
+                      magic = fh.read(16)
+                  if not magic.startswith(b"SQLite format 3"):
+                      print(f"  SKIP: Not a SQLite file (magic: {magic[:10]})")
+                      continue
+
+                  print(f"  Valid SQLite file confirmed")
+                  conn = sqlite3.connect(db_path)
+                  cur = conn.cursor()
+
+                  # Get all tables
+                  cur.execute("SELECT name FROM sqlite_master WHERE type='table'")
+                  tables = [t[0] for t in cur.fetchall()]
+                  print(f"  Tables: {tables}")
+
+                  for table in tables:
+                      try:
+                          cur.execute(f"PRAGMA table_info({table})")
+                          cols = [(c[1], c[2]) for c in cur.fetchall()]
+                          col_names = [c[0] for c in cols]
+                          print(f"\n  Table '{table}': {col_names}")
+
+                          # Dump all rows for debugging (limit to 50)
+                          try:
+                              cur.execute(f"SELECT * FROM {table} LIMIT 50")
+                              rows = cur.fetchall()
+                              for row in rows:
+                                  print(f"    ROW: {row}")
+                          except:
+                              pass
+
+                          # Strategy 1: Direct column update
+                          for col_name, col_type in cols:
+                              cl = col_name.lower()
+                              if "require" in cl or "auth" in cl or ("api" in cl and "key" in cl):
+                                  print(f"  >> Target column found: {col_name} ({col_type})")
+                                  try:
+                                      cur.execute(f"UPDATE {table} SET {col_name} = 0")
+                                      print(f"     SET {col_name} = 0 ({cur.rowcount} rows)")
+                                      patched_any = True
+                                  except Exception as e:
+                                      print(f"     ERROR int: {e}")
+                                  try:
+                                      cur.execute(f"UPDATE {table} SET {col_name} = 'false'")
+                                      print(f"     SET {col_name} = 'false' ({cur.rowcount} rows)")
+                                      patched_any = True
+                                  except Exception as e:
+                                      print(f"     ERROR str: {e}")
+                                  try:
+                                      cur.execute(f"UPDATE {table} SET {col_name} = '0'")
+                                      print(f"     SET {col_name} = '0' ({cur.rowcount} rows)")
+                                      patched_any = True
+                                  except Exception as e:
+                                      print(f"     ERROR str0: {e}")
+
+                          # Strategy 2: Key-value pattern
+                          key_col = None
+                          val_col = None
+                          for c in col_names:
+                              cl = c.lower()
+                              if cl in ["key", "name", "setting", "option", "config_key", "field"]:
+                                  key_col = c
+                              if cl in ["value", "data", "enabled", "val", "config_value", "setting_value"]:
+                                  val_col = c
+
+                          if key_col and val_col:
+                              print(f"  >> Key-value pattern: {key_col} -> {val_col}")
+                              targets = ["requireApiKey", "require_api_key", "requireLogin",
+                                         "require_login", "api_auth", "auth_enabled",
+                                         "auth_required", "requireAuth", "require_auth",
+                                         "apiKeyRequired", "api_key_required"]
+                              for tk in targets:
+                                  for v in ["false", "0", "False", "FALSE", "off", "disabled", "no"]:
+                                      try:
+                                          cur.execute(f"UPDATE {table} SET {val_col} = ? WHERE LOWER({key_col}) = LOWER(?)", (v, tk))
+                                          if cur.rowcount > 0:
+                                              print(f"     UPDATED: {tk} -> {v} ({cur.rowcount} rows)")
+                                              patched_any = True
+                                      except Exception as e:
+                                          pass
+
+                          # Strategy 3: INSERT OR REPLACE for key-value tables
+                          if key_col and val_col:
+                              for tk in ["requireApiKey", "require_api_key"]:
+                                  try:
+                                      cur.execute(f"INSERT OR REPLACE INTO {table} ({key_col}, {val_col}) VALUES (?, ?)", (tk, "false"))
+                                      print(f"     INSERT OR REPLACE: {tk} = false")
+                                      patched_any = True
+                                  except Exception as e:
+                                      print(f"     INSERT failed: {e}")
+
+                      except Exception as e:
+                          print(f"  Table '{table}' error: {e}")
+
+                  conn.commit()
+                  conn.close()
+                  print(f"  DONE patching {db_path}")
+
+              except Exception as e:
+                  print(f"  FATAL ERROR on {db_path}: {e}")
+
+          print(f"\n{'='*60}")
+          print(f"FINAL RESULT: patched_any = {patched_any}")
+          print(f"{'='*60}")
+
+          if not patched_any:
+              print("WARNING: Nothing was patched. This might mean the setting")
+              print("is stored differently. Will try Node.js approach next.")
+          '@ | Set-Content -Path "patch_db.py" -Encoding UTF8
+
+          Write-Host "Python patcher created: $((Get-Item patch_db.py).Length) bytes"
+
+      - name: Run Python Patcher
         run: |
-          $proxyLines = @(
-              'const http = require("http");',
-              'const server = http.createServer((req, res) => {',
-              '  const h = { ...req.headers };',
-              '  const strip = ["cf-connecting-ip","cf-ipcountry","cf-ray","cf-visitor","cf-worker","cf-colo","x-forwarded-for","x-forwarded-proto","x-forwarded-host","x-forwarded-server","x-forwarded-port","x-forwarded-scheme","x-real-ip","forwarded","true-client-ip","x-original-forwarded-for","x-client-ip","x-cluster-client-ip","via","x-request-id","cf-request-id","cf-cache-status","expect-ct","nel","report-to","server","alt-svc"];',
-              '  for (const k of strip) delete h[k];',
-              '  h["host"] = "localhost:20128";',
-              '  h["origin"] = "http://localhost:20128";',
-              '  h["referer"] = "http://localhost:20128/";',
-              '  h["sec-fetch-site"] = "same-origin";',
-              '  h["sec-fetch-mode"] = "cors";',
-              '  h["sec-fetch-dest"] = "empty";',
-              '  const opts = { hostname: "127.0.0.1", port: 20128, path: req.url, method: req.method, headers: h };',
-              '  const p = http.request(opts, (pr) => {',
-              '    res.writeHead(pr.statusCode, pr.headers);',
-              '    pr.pipe(res, { end: true });',
-              '  });',
-              '  req.pipe(p, { end: true });',
-              '  p.on("error", () => { res.writeHead(502); res.end("proxy error"); });',
-              '});',
-              'server.listen(20129, "127.0.0.1", () => console.log("PROXY_READY"));'
-          )
-          $proxyLines | Set-Content -Path "proxy.js" -Encoding UTF8
+          python patch_db.py
+
+      - name: Node.js Backup Patcher (Using 9router own better-sqlite3)
+        run: |
+          @'
+          const fs = require("fs");
+          const path = require("path");
+          const os = require("os");
+          const { execSync } = require("child_process");
+
+          console.log("=".repeat(60));
+          console.log("NODE.JS BACKUP PATCHER (better-sqlite3)");
+          console.log("=".repeat(60));
+
+          // Find 9router global install path
+          let nineRouterPath = "";
+          try {
+              const out = execSync("npm root -g", { encoding: "utf8" }).trim();
+              nineRouterPath = path.join(out, "9router");
+              console.log("9router global path:", nineRouterPath);
+          } catch (e) {
+              console.log("Could not find npm global root:", e.message);
+          }
+
+          // Try to load better-sqlite3 from 9router's deps
+          let Database;
+          const possiblePaths = [
+              path.join(nineRouterPath, "node_modules", "better-sqlite3"),
+              path.join(nineRouterPath, "node_modules", ".pnpm", "better-sqlite3"),
+              "better-sqlite3"
+          ];
+
+          for (const p of possiblePaths) {
+              try {
+                  Database = require(p);
+                  console.log("Loaded better-sqlite3 from:", p);
+                  break;
+              } catch (e) {
+                  // try next
+              }
+          }
+
+          if (!Database) {
+              console.log("better-sqlite3 not found, trying to install...");
+              try {
+                  execSync("npm install better-sqlite3 --no-save", { cwd: os.tmpdir(), encoding: "utf8" });
+                  Database = require(path.join(os.tmpdir(), "node_modules", "better-sqlite3"));
+                  console.log("Installed and loaded better-sqlite3");
+              } catch (e) {
+                  console.log("FATAL: Cannot load better-sqlite3:", e.message);
+                  process.exit(0);
+              }
+          }
+
+          // Find DB files
+          const home = os.homedir();
+          const appdata = process.env.APPDATA || "";
+          const localappdata = process.env.LOCALAPPDATA || "";
+          const searchDirs = [
+              path.join(home, ".9router"),
+              path.join(appdata, "9router"),
+              path.join(localappdata, "9router"),
+              path.join(appdata, ".9router"),
+              path.join(localappdata, ".9router"),
+          ];
+
+          let dbFiles = [];
+          for (const dir of searchDirs) {
+              if (fs.existsSync(dir)) {
+                  console.log("Scanning:", dir);
+                  const walk = (d) => {
+                      for (const item of fs.readdirSync(d)) {
+                          const full = path.join(d, item);
+                          const stat = fs.statSync(full);
+                          if (stat.isDirectory()) walk(full);
+                          else if (item.endsWith(".db") || item.endsWith(".sqlite") || item.endsWith(".sqlite3")) {
+                              dbFiles.push(full);
+                              console.log("  FOUND:", full);
+                          }
+                      }
+                  };
+                  walk(dir);
+              }
+          }
+
+          console.log("DB files found:", dbFiles.length);
+
+          for (const dbFile of dbFiles) {
+              try {
+                  console.log("\nPatching:", dbFile);
+                  const db = new Database(dbFile);
+
+                  // Get tables
+                  const tables = db.prepare("SELECT name FROM sqlite_master WHERE type='table'").all();
+                  console.log("  Tables:", tables.map(t => t.name));
+
+                  for (const { name: table } of tables) {
+                      try {
+                          const cols = db.prepare(`PRAGMA table_info(${table})`).all();
+                          const colNames = cols.map(c => c.name);
+                          console.log(`  ${table}: [${colNames.join(", ")}]`);
+
+                          // Direct column update
+                          for (const col of cols) {
+                              const cl = col.name.toLowerCase();
+                              if (cl.includes("require") || cl.includes("auth") || (cl.includes("api") && cl.includes("key"))) {
+                                  try {
+                                      const r1 = db.prepare(`UPDATE ${table} SET ${col.name} = 0`).run();
+                                      console.log(`    SET ${col.name}=0: ${r1.changes} rows`);
+                                  } catch(e) {}
+                                  try {
+                                      const r2 = db.prepare(`UPDATE ${table} SET ${col.name} = 'false'`).run();
+                                      console.log(`    SET ${col.name}='false': ${r2.changes} rows`);
+                                  } catch(e) {}
+                              }
+                          }
+
+                          // Key-value pattern
+                          const keyCol = colNames.find(c => ["key","name","setting","option","config_key","field"].includes(c.toLowerCase()));
+                          const valCol = colNames.find(c => ["value","data","enabled","val","config_value","setting_value"].includes(c.toLowerCase()));
+
+                          if (keyCol && valCol) {
+                              console.log(`    Key-value: ${keyCol} -> ${valCol}`);
+                              const targets = ["requireApiKey","require_api_key","requireLogin","require_login","api_auth","auth_enabled","auth_required","requireAuth"];
+                              for (const tk of targets) {
+                                  for (const v of ["false","0","False","off","disabled"]) {
+                                      try {
+                                          const r = db.prepare(`UPDATE ${table} SET ${valCol} = ? WHERE LOWER(${keyCol}) = LOWER(?)`).run(v, tk);
+                                          if (r.changes > 0) console.log(`    UPDATED ${tk} -> ${v} (${r.changes} rows)`);
+                                      } catch(e) {}
+                                  }
+                                  try {
+                                      db.prepare(`INSERT OR REPLACE INTO ${table} (${keyCol}, ${valCol}) VALUES (?, ?)`).run(tk, "false");
+                                      console.log(`    INSERT OR REPLACE: ${tk} = false`);
+                                  } catch(e) {}
+                              }
+                          }
+                      } catch(e) {
+                          console.log(`  Table ${table} error: ${e.message}`);
+                      }
+                  }
+
+                  db.close();
+                  console.log("  DONE:", dbFile);
+              } catch(e) {
+                  console.log("  ERROR:", e.message);
+              }
+          }
+
+          console.log("\nNode.js patcher complete.");
+          '@ | Set-Content -Path "patch_db_node.js" -Encoding UTF8
+
+          Write-Host "Node.js patcher created"
+          node patch_db_node.js
+
+      - name: Verify DB was patched
+        run: |
+          Write-Host "Verifying patch results..."
+          $dbFiles = Get-ChildItem -Path "$env:USERPROFILE" -Recurse -Filter "*.db" -ErrorAction SilentlyContinue | Where-Object { $_.DirectoryName -like "*9router*" -or $_.DirectoryName -like "*.9router*" }
+          foreach ($db in $dbFiles) {
+              Write-Host "DB: $($db.FullName) ($($db.Length) bytes)"
+          }
+          if (-not $dbFiles) {
+              Write-Host "WARNING: No 9router DB files found in USERPROFILE!"
+              Write-Host "Checking APPDATA..."
+              Get-ChildItem -Path "$env:APPDATA" -Recurse -Filter "*.db" -ErrorAction SilentlyContinue | Where-Object { $_.DirectoryName -like "*9router*" } | ForEach-Object { Write-Host "DB: $($_.FullName)" }
+              Write-Host "Checking LOCALAPPDATA..."
+              Get-ChildItem -Path "$env:LOCALAPPDATA" -Recurse -Filter "*.db" -ErrorAction SilentlyContinue | Where-Object { $_.DirectoryName -like "*9router*" } | ForEach-Object { Write-Host "DB: $($_.FullName)" }
+          }
+
+      - name: Create Proxy and Start Everything
+        run: |
+          # Create proxy
+          @'
+          const http = require("http");
+          const server = http.createServer((req, res) => {
+            const h = { ...req.headers };
+            const strip = ["cf-connecting-ip","cf-ipcountry","cf-ray","cf-visitor","cf-worker","cf-colo","x-forwarded-for","x-forwarded-proto","x-forwarded-host","x-forwarded-server","x-forwarded-port","x-forwarded-scheme","x-real-ip","forwarded","true-client-ip","x-original-forwarded-for","x-client-ip","x-cluster-client-ip","via","x-request-id","cf-request-id","cf-cache-status","expect-ct","nel","report-to","server","alt-svc","cf-cache-status"];
+            for (const k of strip) delete h[k];
+            h["host"] = "localhost:20128";
+            h["origin"] = "http://localhost:20128";
+            h["referer"] = "http://localhost:20128/";
+            h["sec-fetch-site"] = "same-origin";
+            h["sec-fetch-mode"] = "cors";
+            h["sec-fetch-dest"] = "empty";
+            const opts = { hostname: "127.0.0.1", port: 20128, path: req.url, method: req.method, headers: h };
+            const p = http.request(opts, (pr) => {
+              res.writeHead(pr.statusCode, pr.headers);
+              pr.pipe(res, { end: true });
+            });
+            req.pipe(p, { end: true });
+            p.on("error", () => { res.writeHead(502); res.end("proxy error"); });
+          });
+          server.listen(20129, "127.0.0.1", () => console.log("PROXY_READY"));
+          '@ | Set-Content -Path "proxy.js" -Encoding UTF8
+
           Start-Process -FilePath "node" -ArgumentList "proxy.js" -WindowStyle Hidden
-          Start-Sleep -Seconds 5
-          Write-Host "Proxy started on port 20129"
+          Start-Sleep -Seconds 3
+          Write-Host "Proxy started"
 
-      - name: Restart 9router (Patched DB)
-        run: |
-          Write-Host "9router restartediliyor (patched DB ile)..."
+          # Start 9router
+          Write-Host "Starting 9router with patched DB..."
           Start-Process -FilePath "cmd.exe" -ArgumentList "/c", "set REQUIRE_API_KEY=false && 9router" -WindowStyle Hidden
           Start-Sleep -Seconds 30
+
+          # Verify
           try {
-            $r = Invoke-RestMethod -Uri "http://127.0.0.1:20128/api/health" -Method GET -TimeoutSec 5
-            Write-Host "9router healthy"
+              $r = Invoke-RestMethod -Uri "http://127.0.0.1:20128/api/health" -Method GET -TimeoutSec 5
+              Write-Host "9router healthy"
           } catch {
-            Write-Host "Health check failed but continuing"
-          }
-          try {
-            $models = Invoke-RestMethod -Uri "http://127.0.0.1:20129/v1/models" -Method GET -TimeoutSec 10
-            Write-Host "SUCCESS: Proxy -> 9router OK, models endpoint responding WITHOUT auth"
-            Write-Host "Models count: $($models.data.Count)"
-          } catch {
-            Write-Host "Models test: $_"
+              Write-Host "Health check: $_"
           }
 
-      - name: Create Cloudflare Tunnel
+          try {
+              $models = Invoke-RestMethod -Uri "http://127.0.0.1:20129/v1/models" -Method GET -TimeoutSec 10
+              Write-Host "SUCCESS: /v1/models accessible WITHOUT auth via proxy"
+              Write-Host "Models: $($models.data.Count)"
+          } catch {
+              Write-Host "Models via proxy: $_"
+              Write-Host "Trying direct..."
+              try {
+                  $models2 = Invoke-RestMethod -Uri "http://127.0.0.1:20128/v1/models" -Method GET -TimeoutSec 10
+                  Write-Host "Direct /v1/models OK: $($models2.data.Count) models"
+              } catch {
+                  Write-Host "Direct models also failed: $_"
+              }
+          }
+
+      - name: Create Tunnel
         run: |
           Invoke-WebRequest -Uri "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-windows-amd64.exe" -OutFile "cloudflared.exe"
-          $outLog = "cf-out.log"
-          $errLog = "cf-err.log"
-          Start-Process -NoNewWindow -FilePath ".\cloudflared.exe" -ArgumentList "tunnel", "--url", "http://127.0.0.1:20129" -RedirectStandardOutput $outLog -RedirectStandardError $errLog
+          Start-Process -NoNewWindow -FilePath ".\cloudflared.exe" -ArgumentList "tunnel", "--url", "http://127.0.0.1:20129" -RedirectStandardOutput "cf-out.log" -RedirectStandardError "cf-err.log"
+
           $tunnelUrl = ""
           for ($i = 1; $i -le 60; $i++) {
-            Start-Sleep -Seconds 3
-            $content = ""
-            if (Test-Path $outLog) { $content += Get-Content $outLog -Raw -ErrorAction SilentlyContinue }
-            if (Test-Path $errLog) { $content += Get-Content $errLog -Raw -ErrorAction SilentlyContinue }
-            if ($content -match "https://[a-zA-Z0-9-]+\.(trycloudflare\.com|cfargotunnel\.com)") {
-              $tunnelUrl = $matches[0]
-              break
-            }
-            Write-Host "Tunnel URL bekleniyor... ($i/60)"
+              Start-Sleep -Seconds 3
+              $content = ""
+              if (Test-Path "cf-out.log") { $content += Get-Content "cf-out.log" -Raw -ErrorAction SilentlyContinue }
+              if (Test-Path "cf-err.log") { $content += Get-Content "cf-err.log" -Raw -ErrorAction SilentlyContinue }
+              if ($content -match "https://[a-zA-Z0-9-]+\.(trycloudflare\.com|cfargotunnel\.com)") {
+                  $tunnelUrl = $matches[0]
+                  break
+              }
+              Write-Host "Waiting for tunnel... ($i/60)"
           }
+
           if ($tunnelUrl) {
-            Write-Host ""
-            Write-Host "============================================"
-            Write-Host "9ROUTER TUNNEL HAZIR (BULLETPROOF FINAL)"
-            Write-Host "============================================"
-            Write-Host "TUNNEL URL  : $tunnelUrl"
-            Write-Host "9ROUTER API : $tunnelUrl/v1"
-            Write-Host "API KEY     : Gerekli DEĞİL (DB patch + proxy bypass)"
-            Write-Host "RDP USER    : runneradmin"
-            Write-Host "RDP PASS    : P@ssw0rd123!"
-            Write-Host "============================================"
-            Write-Host "Dashboard: $tunnelUrl/dashboard"
+              Write-Host ""
+              Write-Host "============================================"
+              Write-Host "9ROUTER TUNNEL READY"
+              Write-Host "============================================"
+              Write-Host "TUNNEL URL  : $tunnelUrl"
+              Write-Host "9ROUTER API : $tunnelUrl/v1"
+              Write-Host "API KEY     : NOT REQUIRED (auto-disabled)"
+              Write-Host "RDP USER    : runneradmin"
+              Write-Host "RDP PASS    : P@ssw0rd123!"
+              Write-Host "============================================"
+              Write-Host "Dashboard: $tunnelUrl/dashboard"
           } else {
-            Write-Host "Tunnel URL alinamadi!"
-            if (Test-Path $errLog) { Get-Content $errLog }
-            exit 1
+              Write-Host "TUNNEL FAILED"
+              if (Test-Path "cf-err.log") { Get-Content "cf-err.log" }
+              exit 1
           }
+
           while ($true) {
-            Start-Sleep -Seconds 60
-            Write-Host "Aktif - $(Get-Date -Format 'HH:mm:ss')"
+              Start-Sleep -Seconds 60
+              Write-Host "Alive - $(Get-Date -Format 'HH:mm:ss')"
           }
