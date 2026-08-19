@@ -48,7 +48,7 @@ jobs:
           Start-Sleep -Seconds 5
           Write-Host "9router stopped, port freed"
 
-      - name: Create Python DB Updater (Safe Method)
+      - name: Create Python DB Patcher (NO SINGLE QUOTES - BULLETPROOF)
         run: |
           $lines = @(
               'import sqlite3, os, sys',
@@ -59,19 +59,20 @@ jobs:
               '    appdata = os.environ.get("APPDATA", "")',
               '    localappdata = os.environ.get("LOCALAPPDATA", "")',
               '    programdata = os.environ.get("PROGRAMDATA", "")',
-              '    bases = [b for b in [home, appdata, localappdata, programdata] if b]',
-              '    for base in bases:',
+              '    for base in [home, appdata, localappdata, programdata]:',
+              '        if not base:',
+              '            continue',
               '        for folder in [".9router", "9router"]:',
               '            dir_path = os.path.join(base, folder)',
               '            if os.path.exists(dir_path):',
               '                print("Scanning: " + dir_path)',
               '                for root, dirs, files in os.walk(dir_path):',
               '                    for f in files:',
-              '                        if f.endswith((".db", ".sqlite", ".sqlite3")):',
+              '                        if f.endswith(".db") or f.endswith(".sqlite") or f.endswith(".sqlite3"):',
               '                            paths.append(os.path.join(root, f))',
               '    return paths',
               '',
-              'def patch_sqlite(path):',
+              'def patch_db(path):',
               '    try:',
               '        with open(path, "rb") as fh:',
               '            header = fh.read(16)',
@@ -80,27 +81,27 @@ jobs:
               '        print("=== Patching: " + path + " ===")',
               '        conn = sqlite3.connect(path)',
               '        cur = conn.cursor()',
-              '        cur.execute("SELECT name FROM sqlite_master WHERE type=''table''")',
+              '        cur.execute("SELECT name FROM sqlite_master WHERE type=?", ("table",))',
               '        tables = [t[0] for t in cur.fetchall()]',
-              '        print("Tables found: " + str(tables))',
+              '        print("Tables: " + str(tables))',
               '        patched = False',
               '        for table in tables:',
               '            try:',
               '                cur.execute("PRAGMA table_info(" + table + ")")',
               '                cols = [c[1] for c in cur.fetchall()]',
-              '                print("  " + table + " columns: " + str(cols))',
+              '                print("  " + table + " cols: " + str(cols))',
               '                for col in cols:',
               '                    cl = col.lower()',
               '                    if "require" in cl or ("api" in cl and "key" in cl):',
               '                        try:',
-              '                            cur.execute("UPDATE " + table + " SET " + col + "=0")',
-              '                            print("    Set " + col + "=0")',
+              '                            cur.execute("UPDATE " + table + " SET " + col + "=?", (0,))',
+              '                            print("    Set " + col + " = 0")',
               '                            patched = True',
               '                        except:',
               '                            pass',
               '                        try:',
-              '                            cur.execute("UPDATE " + table + " SET " + col + "=""'false'"'")',
-              '                            print("    Set " + col + "=false")',
+              '                            cur.execute("UPDATE " + table + " SET " + col + "=?", ("false",))',
+              '                            print("    Set " + col + " = false")',
               '                            patched = True',
               '                        except:',
               '                            pass',
@@ -113,16 +114,16 @@ jobs:
               '                    if cl in ["value", "data", "enabled", "val"]:',
               '                        val_col = c',
               '                if key_col and val_col:',
-              '                    print("  Detected key-value pattern: " + key_col + " -> " + val_col)',
-              '                    target_keys = ["requireapikey", "require_api_key", "requirelogin", "require_login", "api_auth", "auth_enabled", "auth_required"]',
-              '                    for tk in target_keys:',
+              '                    print("  Key-value pattern: " + key_col + " -> " + val_col)',
+              '                    targets = ["requireapikey", "require_api_key", "requirelogin", "require_login", "api_auth", "auth_enabled", "auth_required"]',
+              '                    for tk in targets:',
               '                        for v in ["false", "0", 0, "False", "FALSE", "off", "disabled"]:',
               '                            try:',
               '                                cur.execute("UPDATE " + table + " SET " + val_col + "=? WHERE LOWER(" + key_col + ")=?", (v, tk))',
               '                                if cur.rowcount > 0:',
-              '                                    print("    Updated row: " + tk + " -> " + str(v) + " (" + str(cur.rowcount) + " rows)")',
+              '                                    print("    Updated: " + tk + " -> " + str(v) + " (" + str(cur.rowcount) + " rows)")',
               '                                    patched = True',
-              '                            except Exception as e:',
+              '                            except:',
               '                                pass',
               '            except Exception as e:',
               '                print("  Table error: " + str(e))',
@@ -142,14 +143,14 @@ jobs:
               '    print("  - " + f)',
               'patched_count = 0',
               'for f in files:',
-              '    if patch_sqlite(f):',
+              '    if patch_db(f):',
               '        patched_count += 1',
               'print("========================================")',
               'print("RESULT: " + str(patched_count) + " DBs patched")',
               'print("========================================")'
           )
           $lines | Set-Content -Path "update_config.py" -Encoding UTF8
-          Write-Host "Python script created (no escaping needed - single quotes)"
+          Write-Host "Python script created successfully"
           Write-Host "File size: $((Get-Item update_config.py).Length) bytes"
 
       - name: Run DB Patcher
@@ -163,7 +164,7 @@ jobs:
               'const http = require("http");',
               'const server = http.createServer((req, res) => {',
               '  const h = { ...req.headers };',
-              '  const strip = ["cf-connecting-ip","cf-ipcountry","cf-ray","cf-visitor","cf-worker","cf-colo","x-forwarded-for","x-forwarded-proto","x-forwarded-host","x-forwarded-server","x-forwarded-port","x-forwarded-scheme","x-real-ip","forwarded","true-client-ip","x-original-forwarded-for","x-client-ip","x-cluster-client-ip","via","x-request-id","x-forwarded-uri","cf-request-id","cf-cache-status","expect-ct","nel","report-to","server","alt-svc"];',
+              '  const strip = ["cf-connecting-ip","cf-ipcountry","cf-ray","cf-visitor","cf-worker","cf-colo","x-forwarded-for","x-forwarded-proto","x-forwarded-host","x-forwarded-server","x-forwarded-port","x-forwarded-scheme","x-real-ip","forwarded","true-client-ip","x-original-forwarded-for","x-client-ip","x-cluster-client-ip","via","x-request-id","cf-request-id","cf-cache-status","expect-ct","nel","report-to","server","alt-svc"];',
               '  for (const k of strip) delete h[k];',
               '  h["host"] = "localhost:20128";',
               '  h["origin"] = "http://localhost:20128";',
@@ -186,23 +187,23 @@ jobs:
           Start-Sleep -Seconds 5
           Write-Host "Proxy started on port 20129"
 
-      - name: Restart 9router (Patched)
+      - name: Restart 9router (Patched DB)
         run: |
           Write-Host "9router restartediliyor (patched DB ile)..."
           Start-Process -FilePath "cmd.exe" -ArgumentList "/c", "set REQUIRE_API_KEY=false && 9router" -WindowStyle Hidden
           Start-Sleep -Seconds 30
           try {
             $r = Invoke-RestMethod -Uri "http://127.0.0.1:20128/api/health" -Method GET -TimeoutSec 5
-            Write-Host "9router healthy and running"
+            Write-Host "9router healthy"
           } catch {
             Write-Host "Health check failed but continuing"
           }
           try {
             $models = Invoke-RestMethod -Uri "http://127.0.0.1:20129/v1/models" -Method GET -TimeoutSec 10
-            Write-Host "Proxy -> 9router OK: models endpoint responding without auth"
+            Write-Host "SUCCESS: Proxy -> 9router OK, models endpoint responding WITHOUT auth"
             Write-Host "Models count: $($models.data.Count)"
           } catch {
-            Write-Host "Models endpoint test: $_"
+            Write-Host "Models test: $_"
           }
 
       - name: Create Cloudflare Tunnel
