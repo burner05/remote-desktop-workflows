@@ -17,19 +17,32 @@ jobs:
       - name: Bootstrap 9router DB
         run: |
           echo "Starting 9router to create database..."
-          nohup 9router > /dev/null 2>&1 &
-          sleep 30
+          nohup 9router --tray --skip-update > /dev/null 2>&1 &
+          ROUTER_PID=$!
+          echo "9router PID: $ROUTER_PID"
+
+          for i in $(seq 1 60); do
+            code=$(curl -s -o /dev/null -w "%{http_code}" http://127.0.0.1:20128/ --max-time 2 2>/dev/null)
+            if [ "$code" != "000" ]; then
+              echo "9router ready on port 20128 (attempt $i, HTTP $code)"
+              break
+            fi
+            echo "Waiting for 9router... ($i/60)"
+            sleep 3
+          done
+
           echo "Stopping 9router..."
-          pkill -f "9router" 2>/dev/null || true
-          sleep 5
+          kill $ROUTER_PID 2>/dev/null || true
+          sleep 3
           echo "9router stopped."
+
           echo ""
           echo "=== Searching for DB files ==="
           find ~/.9router -type f 2>/dev/null | while read f; do
             echo "  $f ($(stat -c%s "$f" 2>/dev/null) bytes)"
           done
           if [ ! -d ~/.9router ]; then
-            echo "  .9router dir not found! Searching wider..."
+            echo "  .9router dir not found!"
             find ~ -name "*.sqlite" -type f 2>/dev/null | head -10
             find ~ -name "*.db" -type f 2>/dev/null | head -10
           fi
@@ -284,25 +297,32 @@ jobs:
           echo "Proxy started on port 20129"
 
           echo "Starting 9router with patched DB..."
-          nohup 9router > 9router.log 2>&1 &
-          sleep 30
+          nohup 9router --tray --skip-update > 9router.log 2>&1 &
+          echo "9router started in tray mode"
+
+          for i in $(seq 1 60); do
+            code=$(curl -s -o /dev/null -w "%{http_code}" http://127.0.0.1:20128/ --max-time 2 2>/dev/null)
+            if [ "$code" != "000" ]; then
+              echo "9router ready (attempt $i, HTTP $code)"
+              break
+            fi
+            echo "Waiting for 9router... ($i/60)"
+            sleep 3
+          done
 
           echo ""
           echo "=== TESTING ==="
-          if curl -s -o /dev/null -w "%{http_code}" http://127.0.0.1:20128/api/health --max-time 5; then
-            echo "Health: OK"
-          else
-            echo "Health: FAILED"
-          fi
+          code=$(curl -s -o /dev/null -w "%{http_code}" http://127.0.0.1:20128/api/health --max-time 5)
+          echo "Health: $code"
 
           echo "Testing /v1/models via proxy (no auth)..."
           MODELS=$(curl -s http://127.0.0.1:20129/v1/models --max-time 10)
-          if echo "$MODELS" | python3 -c "import sys,json; d=json.load(sys.stdin); print('SUCCESS: /v1/models works WITHOUT auth! Models:', len(d.get('data',[])))" 2>/dev/null; then
+          if echo "$MODELS" | python3 -c "import sys,json; d=json.loads(sys.stdin.read()); print('SUCCESS: /v1/models works WITHOUT auth! Models:', len(d.get('data',[])))" 2>/dev/null; then
             echo "Proxy OK"
           else
             echo "FAILED via proxy. Testing direct..."
             DIRECT=$(curl -s http://127.0.0.1:20128/v1/models --max-time 10)
-            if echo "$DIRECT" | python3 -c "import sys,json; d=json.load(sys.stdin); print('Direct OK:', len(d.get('data',[])), 'models')" 2>/dev/null; then
+            if echo "$DIRECT" | python3 -c "import sys,json; d=json.loads(sys.stdin.read()); print('Direct OK:', len(d.get('data',[])), 'models')" 2>/dev/null; then
               echo "Direct OK"
             else
               echo "Direct also failed"
