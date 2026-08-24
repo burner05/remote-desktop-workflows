@@ -63,19 +63,29 @@ jobs:
             exit 1
           fi
 
+          echo "Forcing DB initialization (lazy DB is created on first query)..."
+          curl -s -o /dev/null http://127.0.0.1:20128/api/health --max-time 10 2>/dev/null || true
+          curl -s -o /dev/null http://127.0.0.1:20128/dashboard --max-time 10 2>/dev/null || true
+          curl -s -o /dev/null http://127.0.0.1:20128/v1/models --max-time 10 2>/dev/null || true
+          sleep 5
+
+          echo ""
+          echo "=== Searching for SQLite DB file ==="
+          DB_FILE=$(find ~/.9router -name "*.sqlite" 2>/dev/null | head -1)
+          if [ -n "$DB_FILE" ]; then
+            echo "FOUND DB: $DB_FILE ($(stat -c%s "$DB_FILE") bytes)"
+            ls -la ~/.9router/db/ 2>/dev/null || true
+          else
+            echo "DB file still not found. Dumping bootstrap.log:"
+            cat bootstrap.log
+            kill $ROUTER_PID 2>/dev/null || true
+            exit 1
+          fi
+
           echo "Stopping 9router (DB is now created)..."
           kill $ROUTER_PID 2>/dev/null || true
           sleep 3
           echo "9router stopped."
-
-          echo ""
-          echo "=== Searching for DB files ==="
-          find ~/.9router -type f 2>/dev/null | while read f; do
-            echo "  $f ($(stat -c%s "$f" 2>/dev/null) bytes)"
-          done
-          if [ ! -d ~/.9router ]; then
-            echo "  .9router dir not found!"
-          fi
 
       - name: Patch DB - Disable requireApiKey
         run: |
