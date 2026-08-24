@@ -1,77 +1,58 @@
-name: WINDOWS RDP - 9ROUTER TUNNEL (FINAL)
+name: LINUX - 9ROUTER TUNNEL
 
 on:
   workflow_dispatch
 
 jobs:
   build:
-    runs-on: windows-latest
+    runs-on: ubuntu-latest
     timeout-minutes: 360
 
     steps:
-      - name: Enable RDP + Password + Keyboard
-        run: |
-          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -name "fDenyTSConnections" -Value 0
-          Enable-NetFirewallRule -DisplayGroup "Remote Desktop"
-          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -name "UserAuthentication" -Value 1
-          $securePassword = ConvertTo-SecureString -AsPlainText "P@ssw0rd123!" -Force
-          Set-LocalUser -Name "runneradmin" -Password $securePassword
-          $LangList = New-WinUserLanguageList tr-TR
-          $LangList[0].InputMethodTips.Clear()
-          $LangList[0].InputMethodTips.Add("041F:0000041F")
-          Set-WinUserLanguageList -LanguageList $LangList -Force
-          Set-WinSystemLocale -SystemLocale tr-TR
-          Set-Culture -CultureInfo tr-TR
-          Write-Host "System configured"
-
       - name: Install 9router
         run: |
           npm install -g 9router
-          Write-Host "9router installed"
+          echo "9router installed"
 
       - name: Bootstrap 9router DB
         run: |
-          Write-Host "Starting 9router to create database..."
-          Start-Process -FilePath "cmd.exe" -ArgumentList "/c", "9router" -WindowStyle Hidden
-          Start-Sleep -Seconds 30
-          Write-Host "Stopping 9router..."
-          Get-Process -Name "node" -ErrorAction SilentlyContinue | Stop-Process -Force
-          Start-Sleep -Seconds 5
-          Write-Host "9router stopped."
-          Write-Host ""
-          Write-Host "=== Searching for DB files ==="
-          $homeDir = $env:USERPROFILE
-          Get-ChildItem -Path "$homeDir\.9router" -Recurse -ErrorAction SilentlyContinue | ForEach-Object { Write-Host "  $($_.FullName) ($($_.Length) bytes)" }
-          if (-not (Test-Path "$homeDir\.9router")) {
-              Write-Host "  .9router dir not found! Searching wider..."
-              Get-ChildItem -Path "$homeDir" -Recurse -Filter "*.sqlite" -ErrorAction SilentlyContinue | ForEach-Object { Write-Host "  SQLITE: $($_.FullName)" }
-              Get-ChildItem -Path "$homeDir" -Recurse -Filter "*.db" -ErrorAction SilentlyContinue | ForEach-Object { Write-Host "  DB: $($_.FullName)" }
-          }
+          echo "Starting 9router to create database..."
+          nohup 9router > /dev/null 2>&1 &
+          sleep 30
+          echo "Stopping 9router..."
+          pkill -f "9router" 2>/dev/null || true
+          sleep 5
+          echo "9router stopped."
+          echo ""
+          echo "=== Searching for DB files ==="
+          find ~/.9router -type f 2>/dev/null | while read f; do
+            echo "  $f ($(stat -c%s "$f" 2>/dev/null) bytes)"
+          done
+          if [ ! -d ~/.9router ]; then
+            echo "  .9router dir not found! Searching wider..."
+            find ~ -name "*.sqlite" -type f 2>/dev/null | head -10
+            find ~ -name "*.db" -type f 2>/dev/null | head -10
+          fi
 
-      - name: Patch DB - Disable requireApiKey (CORRECT METHOD)
+      - name: Patch DB - Disable requireApiKey
         run: |
-          @'
+          python3 << 'PYEOF'
           import sqlite3, os, sys, json
 
           print("=" * 60)
-          print("9ROUTER DB PATCHER - CORRECT METHOD")
-          print("settings table: id=1, data=JSON blob")
+          print("9ROUTER DB PATCHER - LINUX")
           print("=" * 60)
 
           home = os.path.expanduser("~")
 
-          # Possible DB paths (9router uses ~/.9router/db/data.sqlite)
           db_candidates = [
               os.path.join(home, ".9router", "db", "data.sqlite"),
               os.path.join(home, ".9router", "data.sqlite"),
               os.path.join(home, ".9router", "db.sqlite"),
               os.path.join(home, ".9router", "9router.db"),
               os.path.join(home, ".9router", "db", "9router.sqlite"),
-              os.path.join(os.environ.get("APPDATA", ""), "9router", "db", "data.sqlite"),
-              os.path.join(os.environ.get("LOCALAPPDATA", ""), "9router", "db", "data.sqlite"),
           ]
 
-          # Also search for any sqlite/db files under .9router
           nine_dir = os.path.join(home, ".9router")
           if os.path.exists(nine_dir):
               for root, dirs, files in os.walk(nine_dir):
@@ -98,7 +79,6 @@ jobs:
 
           if not db_path:
               print("\nFATAL: No valid SQLite DB found!")
-              print("Listing .9router directory contents:")
               if os.path.exists(nine_dir):
                   for root, dirs, files in os.walk(nine_dir):
                       for f in files:
@@ -113,12 +93,10 @@ jobs:
           conn = sqlite3.connect(db_path)
           cur = conn.cursor()
 
-          # Show all tables
           cur.execute("SELECT name FROM sqlite_master WHERE type='table'")
           tables = [t[0] for t in cur.fetchall()]
           print(f"Tables: {tables}")
 
-          # Find the settings table (might be named differently)
           settings_table = None
           for t in tables:
               if "setting" in t.lower() or "config" in t.lower() or "option" in t.lower():
@@ -126,7 +104,6 @@ jobs:
                   break
 
           if not settings_table:
-              # Try all tables, look for one with a JSON data column
               for t in tables:
                   cur.execute(f"PRAGMA table_info({t})")
                   cols = [c[1] for c in cur.fetchall()]
@@ -148,14 +125,12 @@ jobs:
           cols = [(c[1], c[2]) for c in cur.fetchall()]
           print(f"Columns: {cols}")
 
-          # Show current data
           cur.execute(f"SELECT * FROM {settings_table} LIMIT 10")
           rows = cur.fetchall()
           print(f"Current rows ({len(rows)}):")
           for row in rows:
               print(f"  {row}")
 
-          # PATCH STRATEGY 1: JSON blob in 'data' column
           col_names = [c[0] for c in cols]
           data_col = None
           id_col = None
@@ -171,9 +146,7 @@ jobs:
 
           if data_col:
               print(f"\n  JSON data column found: '{data_col}'")
-
               if id_col:
-                  # Read existing row
                   cur.execute(f"SELECT {data_col} FROM {settings_table} WHERE {id_col} = 1")
                   row = cur.fetchone()
               else:
@@ -184,12 +157,9 @@ jobs:
                   try:
                       data = json.loads(row[0])
                       print(f"  Current JSON: {json.dumps(data, indent=2)[:500]}")
-
-                      # Set requireApiKey to false
                       data["requireApiKey"] = False
                       data["requireLogin"] = False
                       data["require_auth"] = False
-
                       new_json = json.dumps(data)
                       if id_col:
                           cur.execute(f"UPDATE {settings_table} SET {data_col} = ? WHERE {id_col} = 1", (new_json,))
@@ -197,9 +167,7 @@ jobs:
                           cur.execute(f"UPDATE {settings_table} SET {data_col} = ?", (new_json,))
                       print(f"  UPDATED! requireApiKey -> false")
                       patched = True
-                  except json.JSONDecodeError as e:
-                      print(f"  JSON parse error: {e}")
-                      # Maybe it's not JSON, try direct replacement
+                  except json.JSONDecodeError:
                       old_val = row[0]
                       new_val = old_val.replace('"requireApiKey":true', '"requireApiKey":false')
                       new_val = new_val.replace('"requireApiKey": true', '"requireApiKey": false')
@@ -209,7 +177,6 @@ jobs:
                           print(f"  String replacement done!")
                           patched = True
               else:
-                  # No row exists, insert one
                   new_data = json.dumps({"requireApiKey": False, "requireLogin": False})
                   if id_col:
                       try:
@@ -227,7 +194,6 @@ jobs:
                           print(f"  INSERT failed: {e}")
           else:
               print(f"\n  No JSON data column found. Trying key-value approach...")
-              # Key-value fallback
               key_col = None
               val_col = None
               for c in col_names:
@@ -253,7 +219,6 @@ jobs:
                       except:
                           pass
 
-          # Also try SQLite json_set as ChatGPT suggested
           if not patched and data_col and id_col:
               try:
                   cur.execute(f"""
@@ -269,7 +234,6 @@ jobs:
 
           conn.commit()
 
-          # Verify
           print(f"\nVerification:")
           if data_col:
               if id_col:
@@ -279,7 +243,7 @@ jobs:
               row = cur.fetchone()
               if row:
                   print(f"  Final data: {row[0][:500]}")
-                  if "false" in str(row[0]).lower() or '"requireApiKey": false' in str(row[0]) or '"requireApiKey":false' in str(row[0]):
+                  if "false" in str(row[0]).lower() or '"requireApiKey": false' in str(row[0]):
                       print(f"  >>> CONFIRMED: requireApiKey is FALSE")
                   else:
                       print(f"  >>> WARNING: Could not confirm requireApiKey=false")
@@ -288,13 +252,11 @@ jobs:
           print(f"\n{'='*60}")
           print(f"RESULT: patched = {patched}")
           print(f"{'='*60}")
-          '@ | Set-Content -Path "patch_db.py" -Encoding UTF8
-
-          python patch_db.py
+          PYEOF
 
       - name: Create Proxy and Start 9router
         run: |
-          @'
+          cat > proxy.js << 'PROXYEOF'
           const http = require("http");
           const server = http.createServer((req, res) => {
             const h = { ...req.headers };
@@ -315,78 +277,79 @@ jobs:
             p.on("error", () => { res.writeHead(502); res.end("proxy error"); });
           });
           server.listen(20129, "127.0.0.1", () => console.log("PROXY_READY"));
-          '@ | Set-Content -Path "proxy.js" -Encoding UTF8
+          PROXYEOF
 
-          Start-Process -FilePath "node" -ArgumentList "proxy.js" -WindowStyle Hidden
-          Start-Sleep -Seconds 3
-          Write-Host "Proxy started on 20129"
+          nohup node proxy.js > proxy.log 2>&1 &
+          sleep 3
+          echo "Proxy started on port 20129"
 
-          Write-Host "Starting 9router with patched DB..."
-          Start-Process -FilePath "cmd.exe" -ArgumentList "/c", "9router" -WindowStyle Hidden
-          Start-Sleep -Seconds 30
+          echo "Starting 9router with patched DB..."
+          nohup 9router > 9router.log 2>&1 &
+          sleep 30
 
-          # Test
-          Write-Host ""
-          Write-Host "=== TESTING ==="
-          try {
-              $r = Invoke-RestMethod -Uri "http://127.0.0.1:20128/api/health" -Method GET -TimeoutSec 5
-              Write-Host "Health: OK"
-          } catch {
-              Write-Host "Health: FAILED - $_"
-          }
+          echo ""
+          echo "=== TESTING ==="
+          if curl -s -o /dev/null -w "%{http_code}" http://127.0.0.1:20128/api/health --max-time 5; then
+            echo "Health: OK"
+          else
+            echo "Health: FAILED"
+          fi
 
-          Write-Host "Testing /v1/models via proxy (no auth)..."
-          try {
-              $m = Invoke-RestMethod -Uri "http://127.0.0.1:20129/v1/models" -Method GET -TimeoutSec 10
-              Write-Host "SUCCESS: /v1/models works WITHOUT auth! Models: $($m.data.Count)"
-          } catch {
-              Write-Host "FAILED via proxy: $_"
-              Write-Host "Testing direct..."
-              try {
-                  $m2 = Invoke-RestMethod -Uri "http://127.0.0.1:20128/v1/models" -Method GET -TimeoutSec 10
-                  Write-Host "Direct OK: $($m2.data.Count) models"
-              } catch {
-                  Write-Host "Direct also failed: $_"
-              }
-          }
+          echo "Testing /v1/models via proxy (no auth)..."
+          MODELS=$(curl -s http://127.0.0.1:20129/v1/models --max-time 10)
+          if echo "$MODELS" | python3 -c "import sys,json; d=json.load(sys.stdin); print('SUCCESS: /v1/models works WITHOUT auth! Models:', len(d.get('data',[])))" 2>/dev/null; then
+            echo "Proxy OK"
+          else
+            echo "FAILED via proxy. Testing direct..."
+            DIRECT=$(curl -s http://127.0.0.1:20128/v1/models --max-time 10)
+            if echo "$DIRECT" | python3 -c "import sys,json; d=json.load(sys.stdin); print('Direct OK:', len(d.get('data',[])), 'models')" 2>/dev/null; then
+              echo "Direct OK"
+            else
+              echo "Direct also failed"
+            fi
+          fi
 
       - name: Create Tunnel
         run: |
-          Invoke-WebRequest -Uri "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-windows-amd64.exe" -OutFile "cloudflared.exe"
-          Start-Process -NoNewWindow -FilePath ".\cloudflared.exe" -ArgumentList "tunnel", "--url", "http://127.0.0.1:20129" -RedirectStandardOutput "cf-out.log" -RedirectStandardError "cf-err.log"
+          curl -sL https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64 -o cloudflared
+          chmod +x cloudflared
 
-          $tunnelUrl = ""
-          for ($i = 1; $i -le 60; $i++) {
-              Start-Sleep -Seconds 3
-              $content = ""
-              if (Test-Path "cf-out.log") { $content += Get-Content "cf-out.log" -Raw -ErrorAction SilentlyContinue }
-              if (Test-Path "cf-err.log") { $content += Get-Content "cf-err.log" -Raw -ErrorAction SilentlyContinue }
-              if ($content -match "https://[a-zA-Z0-9-]+\.(trycloudflare\.com|cfargotunnel\.com)") {
-                  $tunnelUrl = $matches[0]
-                  break
-              }
-              Write-Host "Waiting for tunnel... ($i/60)"
-          }
+          nohup ./cloudflared tunnel --url http://127.0.0.1:20129 > cf-out.log 2>&1 &
+          echo "cloudflared started"
 
-          if ($tunnelUrl) {
-              Write-Host ""
-              Write-Host "============================================"
-              Write-Host "9ROUTER TUNNEL READY"
-              Write-Host "============================================"
-              Write-Host "TUNNEL URL  : $tunnelUrl"
-              Write-Host "9ROUTER API : $tunnelUrl/v1"
-              Write-Host "API KEY     : NOT REQUIRED (DB patched)"
-              Write-Host "RDP USER    : runneradmin"
-              Write-Host "RDP PASS    : P@ssw0rd123!"
-              Write-Host "============================================"
-              Write-Host "Dashboard: $tunnelUrl/dashboard"
-          } else {
-              Write-Host "TUNNEL FAILED"
-              if (Test-Path "cf-err.log") { Get-Content "cf-err.log" }
-              exit 1
-          }
+          tunnelUrl=""
+          for i in $(seq 1 60); do
+            sleep 3
+            content=""
+            if [ -f cf-out.log ]; then content=$(cat cf-out.log); fi
+            url=$(echo "$content" | grep -oE 'https://[a-zA-Z0-9-]+\.(trycloudflare\.com|cfargotunnel\.com)' | head -1)
+            if [ -n "$url" ]; then
+              tunnelUrl="$url"
+              break
+            fi
+            echo "Waiting for tunnel... ($i/60)"
+          done
 
-          while ($true) {
-              Start-Sleep -Seconds 60
-              Write-Host "Alive - $(Get-Date -Format 'HH:mm:ss')"
-          }
+          if [ -n "$tunnelUrl" ]; then
+            echo ""
+            echo "============================================"
+            echo "9ROUTER TUNNEL READY"
+            echo "============================================"
+            echo "TUNNEL URL  : $tunnelUrl"
+            echo "9ROUTER API : $tunnelUrl/v1"
+            echo "API KEY     : NOT REQUIRED (DB patched)"
+            echo "============================================"
+            echo "Dashboard   : $tunnelUrl/dashboard"
+            echo "============================================"
+          else
+            echo "TUNNEL FAILED"
+            if [ -f cf-out.log ]; then cat cf-out.log; fi
+            exit 1
+          fi
+
+          echo ""
+          echo "Keeping alive..."
+          while true; do
+            sleep 60
+            echo "Alive - $(date '+%H:%M:%S')"
+          done
