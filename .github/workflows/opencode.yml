@@ -89,7 +89,7 @@ jobs:
         run: |
           curl -fsSL https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64 -o cloudflared
           chmod +x cloudflared
-          ./cloudflared tunnel --url http://127.0.0.1:4096 > cf.log 2>&1 &
+          ./cloudflared tunnel --protocol http2 --no-autoupdate --url http://127.0.0.1:4096 > cf.log 2>&1 &
 
           tunnelUrl=""
           for i in $(seq 1 60); do
@@ -132,7 +132,7 @@ jobs:
             sleep 60
             if ! pgrep -f cloudflared >/dev/null; then
               echo "$(date -u +'%H:%M:%S UTC') WARN: cloudflared died, restarting..."
-              ./cloudflared tunnel --url http://127.0.0.1:4096 > cf.log 2>&1 &
+              ./cloudflared tunnel --protocol http2 --no-autoupdate --url http://127.0.0.1:4096 > cf.log 2>&1 &
               for j in $(seq 1 60); do
                 sleep 3
                 newUrl=$(grep -oE "https://[a-zA-Z0-9.-]+\.trycloudflare\.com" cf.log | head -n1)
