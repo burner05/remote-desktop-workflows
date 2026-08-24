@@ -109,6 +109,14 @@ jobs:
           fi
 
           echo ""
+          echo "=== cf.log (cloudflared status) ==="
+          cat cf.log
+          echo "=== local opencode check ==="
+          curl -s --max-time 5 -o /dev/null -w "HTTP %{http_code}\n" "http://127.0.0.1:4096/" || echo "local check failed"
+          echo "=== cloudflared process ==="
+          pgrep -fa cloudflared || echo "cloudflared NOT running!"
+
+          echo ""
           echo "============================================"
           echo "OPENCE WEB TUNNEL READY"
           echo "============================================"
@@ -122,5 +130,18 @@ jobs:
 
           while true; do
             sleep 60
-            echo "Alive - $(date -u +'%H:%M:%S UTC')"
+            if ! pgrep -f cloudflared >/dev/null; then
+              echo "$(date -u +'%H:%M:%S UTC') WARN: cloudflared died, restarting..."
+              ./cloudflared tunnel --url http://127.0.0.1:4096 > cf.log 2>&1 &
+              for j in $(seq 1 60); do
+                sleep 3
+                newUrl=$(grep -oE "https://[a-zA-Z0-9.-]+\.trycloudflare\.com" cf.log | head -n1)
+                if [ -n "$newUrl" ]; then
+                  tunnelUrl="$newUrl"
+                  echo "$(date -u +'%H:%M:%S UTC') NEW TUNNEL URL: $tunnelUrl"
+                  break
+                fi
+              done
+            fi
+            echo "Alive - $(date -u +'%H:%M:%S UTC') | Tunnel: ${tunnelUrl}"
           done
