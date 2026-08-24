@@ -18,10 +18,15 @@ jobs:
           which opencode || ls -la "$HOME/.local/bin" || true
           opencode --version
 
+      - name: Prepare project folder
+        run: |
+          mkdir -p /home/runner/workspace
+          echo "Project folder ready: /home/runner/workspace"
+
       - name: Start opencode web
         run: |
           export PATH="$HOME/.local/bin:$HOME/.opencode/bin:$PATH"
-          nohup opencode web --port 4096 --hostname 0.0.0.0 > opencode.log 2>&1 &
+          nohup opencode web --dir /home/runner/workspace --port 4096 --hostname 0.0.0.0 > opencode.log 2>&1 &
           echo "opencode web launched (pid $!)"
           for i in $(seq 1 30); do
             if curl -s -o /dev/null "http://127.0.0.1:4096/"; then
@@ -63,6 +68,7 @@ jobs:
           echo "TUNNEL URL     : $tunnelUrl"
           echo "OPENCE WEB     : $tunnelUrl"
           echo "LOCAL (runner) : http://localhost:4096"
+          echo "PROJECT FOLDER : /home/runner/workspace"
           echo "AUTH           : NONE (unsecured)"
           echo "============================================"
 
