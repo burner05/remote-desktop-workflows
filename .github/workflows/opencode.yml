@@ -27,7 +27,7 @@ jobs:
 
       - name: Prepare project folder + yolo permissions
         run: |
-          mkdir -p /home/runner/workspace
+          mkdir -p /home/runner/NewProject
           mkdir -p "$HOME/.config/opencode"
           cat > "$HOME/.config/opencode/opencode.json" <<'EOF'
           {
@@ -51,7 +51,7 @@ jobs:
             }
           }
           EOF
-          echo "Project folder ready: /home/runner/workspace"
+          echo "Project folder ready: /home/runner/NewProject"
           echo "YOLO permissions written to $HOME/.config/opencode/opencode.json"
 
       - name: Start opencode web
@@ -60,7 +60,7 @@ jobs:
           export OPENCODE_YOLO=true
           echo "opencode binary: $(command -v opencode)"
           opencode --version || true
-          cd /home/runner/workspace
+          cd /home/runner/NewProject
           nohup opencode web --port 4096 --hostname 0.0.0.0 > opencode.log 2>&1 &
           echo "opencode web launched (pid $!)"
           sleep 10
@@ -112,10 +112,10 @@ jobs:
           echo "============================================"
           echo "OPENCE WEB TUNNEL READY"
           echo "============================================"
-          echo "TUNNEL URL     : ${tunnelUrl}?directory=/home/runner/workspace"
-          echo "OPENCE WEB     : ${tunnelUrl}?directory=/home/runner/workspace"
+          echo "TUNNEL URL     : ${tunnelUrl}"
+          echo "OPENCE WEB     : ${tunnelUrl}"
           echo "LOCAL (runner) : http://localhost:4096"
-          echo "PROJECT FOLDER : /home/runner/workspace"
+          echo "PROJECT FOLDER : /home/runner/NewProject"
           echo "AUTH           : NONE (unsecured)"
           echo "YOLO           : permissions=allow (config) + OPENCODE_YOLO=true"
           echo "============================================"
