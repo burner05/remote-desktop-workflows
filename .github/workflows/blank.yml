@@ -14,6 +14,25 @@ jobs:
           npm install -g 9router
           echo "9router installed"
 
+      - name: Pre-warm 9router runtime deps
+        run: |
+          # 9router's first boot blocks on `npm install better-sqlite3` (native compile)
+          # and systray2. Install them ahead of time so the server starts fast.
+          set -e
+          RUNTIME_DIR="$HOME/.9router/runtime"
+          mkdir -p "$RUNTIME_DIR"
+          cd "$RUNTIME_DIR"
+          if [ ! -f package.json ]; then
+            npm init -y >/dev/null 2>&1
+          fi
+          echo "Installing better-sqlite3, sql.js, systray2 into runtime..."
+          npm install --no-audit --no-fund \
+            better-sqlite3@12.6.2 \
+            sql.js@1.14.1 \
+            systray2@2.1.4 2>&1 | tail -8
+          echo "Runtime deps installed:"
+          ls node_modules | grep -E "better-sqlite3|sql.js|systray2" || true
+
       - name: Bootstrap 9router DB
         run: |
           echo "Starting 9router to create database..."
@@ -21,13 +40,17 @@ jobs:
           ROUTER_PID=$!
           echo "9router PID: $ROUTER_PID"
 
-          for i in $(seq 1 60); do
+          code="000"
+          for i in $(seq 1 200); do
             code=$(curl -s -o /dev/null -w "%{http_code}" http://127.0.0.1:20128/ --max-time 2 2>/dev/null || echo "000")
             if [ "$code" != "000" ]; then
               echo "9router ready on port 20128 (attempt $i, HTTP $code)"
               break
             fi
-            echo "Waiting for 9router... ($i/60)"
+            if [ $((i % 10)) -eq 0 ]; then
+              echo "Still waiting for 9router... ($i/200) — last log lines:"
+              tail -3 bootstrap.log 2>/dev/null || true
+            fi
             sleep 3
           done
 
@@ -35,9 +58,12 @@ jobs:
           if [ "$code" = "000" ]; then
             echo "WARNING: 9router did not become ready. Dumping bootstrap.log:"
             cat bootstrap.log
+            echo "Killing stuck process..."
+            kill $ROUTER_PID 2>/dev/null || true
+            exit 1
           fi
 
-          echo "Stopping 9router..."
+          echo "Stopping 9router (DB is now created)..."
           kill $ROUTER_PID 2>/dev/null || true
           sleep 3
           echo "9router stopped."
@@ -49,8 +75,6 @@ jobs:
           done
           if [ ! -d ~/.9router ]; then
             echo "  .9router dir not found!"
-            find ~ -name "*.sqlite" -type f 2>/dev/null | head -10
-            find ~ -name "*.db" -type f 2>/dev/null | head -10
           fi
 
       - name: Patch DB - Disable requireApiKey
@@ -306,28 +330,38 @@ jobs:
           nohup 9router --tray --skip-update > 9router.log 2>&1 &
           echo "9router started in tray mode"
 
-          for i in $(seq 1 60); do
+          code="000"
+          for i in $(seq 1 200); do
             code=$(curl -s -o /dev/null -w "%{http_code}" http://127.0.0.1:20128/ --max-time 2 2>/dev/null || echo "000")
             if [ "$code" != "000" ]; then
               echo "9router ready (attempt $i, HTTP $code)"
               break
             fi
-            echo "Waiting for 9router... ($i/60)"
+            if [ $((i % 10)) -eq 0 ]; then
+              echo "Still waiting for 9router... ($i/200) — last log lines:"
+              tail -3 9router.log 2>/dev/null || true
+            fi
             sleep 3
           done
 
+          if [ "$code" = "000" ]; then
+            echo "9router failed to start. Dumping 9router.log:"
+            cat 9router.log
+            exit 1
+          fi
+
           echo ""
           echo "=== TESTING ==="
-          code=$(curl -s -o /dev/null -w "%{http_code}" http://127.0.0.1:20128/api/health --max-time 5)
-          echo "Health: $code"
+          health=$(curl -s -o /dev/null -w "%{http_code}" http://127.0.0.1:20128/api/health --max-time 5 2>/dev/null || echo "000")
+          echo "Health: $health"
 
           echo "Testing /v1/models via proxy (no auth)..."
-          MODELS=$(curl -s http://127.0.0.1:20129/v1/models --max-time 10)
+          MODELS=$(curl -s http://127.0.0.1:20129/v1/models --max-time 10 2>/dev/null || echo "")
           if echo "$MODELS" | python3 -c "import sys,json; d=json.loads(sys.stdin.read()); print('SUCCESS: /v1/models works WITHOUT auth! Models:', len(d.get('data',[])))" 2>/dev/null; then
             echo "Proxy OK"
           else
             echo "FAILED via proxy. Testing direct..."
-            DIRECT=$(curl -s http://127.0.0.1:20128/v1/models --max-time 10)
+            DIRECT=$(curl -s http://127.0.0.1:20128/v1/models --max-time 10 2>/dev/null || echo "")
             if echo "$DIRECT" | python3 -c "import sys,json; d=json.loads(sys.stdin.read()); print('Direct OK:', len(d.get('data',[])), 'models')" 2>/dev/null; then
               echo "Direct OK"
             else
