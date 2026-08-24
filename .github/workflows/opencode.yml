@@ -15,8 +15,15 @@ jobs:
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
           echo "$HOME/.opencode/bin" >> "$GITHUB_PATH"
           export PATH="$HOME/.local/bin:$HOME/.opencode/bin:$PATH"
-          which opencode || ls -la "$HOME/.local/bin" || true
-          opencode --version
+          # Fallback: locate binary and symlink if not on PATH
+          if ! command -v opencode >/dev/null 2>&1; then
+            BIN=$(find "$HOME/.opencode" /usr/local /opt -name opencode -type f 2>/dev/null | head -n1)
+            if [ -n "$BIN" ]; then
+              ln -sf "$BIN" "$HOME/.opencode/bin/opencode" 2>/dev/null || true
+            fi
+          fi
+          command -v opencode || ls -la "$HOME/.opencode/bin" || true
+          opencode --version || true
 
       - name: Prepare project folder
         run: |
@@ -26,17 +33,25 @@ jobs:
       - name: Start opencode web
         run: |
           export PATH="$HOME/.local/bin:$HOME/.opencode/bin:$PATH"
+          echo "opencode binary: $(command -v opencode)"
+          opencode --version || true
           nohup opencode web --dir /home/runner/workspace --port 4096 --hostname 0.0.0.0 > opencode.log 2>&1 &
           echo "opencode web launched (pid $!)"
-          for i in $(seq 1 30); do
-            if curl -s -o /dev/null "http://127.0.0.1:4096/"; then
-              echo "opencode web is UP on port 4096"
+          up=0
+          for i in $(seq 1 60); do
+            if timeout 3 bash -c '</dev/tcp/127.0.0.1/4096' 2>/dev/null; then
+              echo "opencode web is UP on port 4096 (try $i)"
+              up=1
               break
             fi
             sleep 2
           done
           echo "=== opencode.log ==="
           cat opencode.log
+          if [ "$up" != "1" ]; then
+            echo "WARN: port 4096 not listening within timeout; printing process state:"
+            ps aux | grep -i opencode | grep -v grep || true
+          fi
 
       - name: Create Tunnel
         run: |
