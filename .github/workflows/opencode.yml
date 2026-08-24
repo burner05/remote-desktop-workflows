@@ -25,18 +25,49 @@ jobs:
           command -v opencode || ls -la "$HOME/.opencode/bin" || true
           opencode --version || true
 
-      - name: Prepare project folder
+      - name: Prepare project folder + yolo permissions
         run: |
           mkdir -p /home/runner/workspace
+          mkdir -p "$HOME/.config/opencode"
+          cat > "$HOME/.config/opencode/opencode.json" <<'EOF'
+          {
+            "$schema": "https://opencode.ai/config.json",
+            "permission": {
+              "*": "allow",
+              "bash": "allow",
+              "edit": "allow",
+              "write": "allow",
+              "read": "allow",
+              "glob": "allow",
+              "grep": "allow",
+              "webfetch": "allow",
+              "websearch": "allow",
+              "task": "allow",
+              "skill": "allow",
+              "lsp": "allow",
+              "question": "allow",
+              "external_directory": "allow",
+              "doom_loop": "allow"
+            }
+          }
+          EOF
           echo "Project folder ready: /home/runner/workspace"
+          echo "YOLO permissions written to $HOME/.config/opencode/opencode.json"
 
       - name: Start opencode web
         run: |
           export PATH="$HOME/.local/bin:$HOME/.opencode/bin:$PATH"
+          export OPENCODE_YOLO=true
           echo "opencode binary: $(command -v opencode)"
           opencode --version || true
-          nohup opencode web --dir /home/runner/workspace --port 4096 --hostname 0.0.0.0 > opencode.log 2>&1 &
+          nohup opencode web --auto --dir /home/runner/workspace --port 4096 --hostname 0.0.0.0 > opencode.log 2>&1 &
           echo "opencode web launched (pid $!)"
+          sleep 10
+          echo "=== opencode.log (early, after 10s) ==="
+          cat opencode.log
+          if ! timeout 3 bash -c '</dev/tcp/127.0.0.1/4096' 2>/dev/null; then
+            echo "Port not yet listening after 10s; continuing to wait..."
+          fi
           up=0
           for i in $(seq 1 60); do
             if timeout 3 bash -c '</dev/tcp/127.0.0.1/4096' 2>/dev/null; then
@@ -46,7 +77,7 @@ jobs:
             fi
             sleep 2
           done
-          echo "=== opencode.log ==="
+          echo "=== opencode.log (final) ==="
           cat opencode.log
           if [ "$up" != "1" ]; then
             echo "WARN: port 4096 not listening within timeout; printing process state:"
