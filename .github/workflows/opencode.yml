@@ -1,0 +1,72 @@
+name: OPENCE WEB - CLOUDFLARE TUNNEL
+
+on:
+  workflow_dispatch
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+
+    steps:
+      - name: Install opencode
+        run: |
+          curl -fsSL https://opencode.ai/install | bash
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+          echo "$HOME/.opencode/bin" >> "$GITHUB_PATH"
+          export PATH="$HOME/.local/bin:$HOME/.opencode/bin:$PATH"
+          which opencode || ls -la "$HOME/.local/bin" || true
+          opencode --version
+
+      - name: Start opencode web
+        run: |
+          export PATH="$HOME/.local/bin:$HOME/.opencode/bin:$PATH"
+          nohup opencode web --port 4096 --hostname 0.0.0.0 > opencode.log 2>&1 &
+          echo "opencode web launched (pid $!)"
+          for i in $(seq 1 30); do
+            if curl -s -o /dev/null "http://127.0.0.1:4096/"; then
+              echo "opencode web is UP on port 4096"
+              break
+            fi
+            sleep 2
+          done
+          echo "=== opencode.log ==="
+          cat opencode.log
+
+      - name: Create Tunnel
+        run: |
+          curl -fsSL https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64 -o cloudflared
+          chmod +x cloudflared
+          ./cloudflared tunnel --url http://127.0.0.1:4096 > cf.log 2>&1 &
+
+          tunnelUrl=""
+          for i in $(seq 1 60); do
+            sleep 3
+            url=$(grep -oE "https://[a-zA-Z0-9.-]+\.trycloudflare\.com" cf.log | head -n1)
+            if [ -n "$url" ]; then
+              tunnelUrl="$url"
+              break
+            fi
+            echo "Waiting for tunnel... ($i/60)"
+          done
+
+          if [ -z "$tunnelUrl" ]; then
+            echo "TUNNEL FAILED"
+            cat cf.log
+            exit 1
+          fi
+
+          echo ""
+          echo "============================================"
+          echo "OPENCE WEB TUNNEL READY"
+          echo "============================================"
+          echo "TUNNEL URL     : $tunnelUrl"
+          echo "OPENCE WEB     : $tunnelUrl"
+          echo "LOCAL (runner) : http://localhost:4096"
+          echo "AUTH           : NONE (unsecured)"
+          echo "============================================"
+
+          while true; do
+            sleep 60
+            echo "Alive - $(date -u +'%H:%M:%S UTC')"
+          done
