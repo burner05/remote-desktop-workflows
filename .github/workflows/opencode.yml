@@ -60,7 +60,8 @@ jobs:
           export OPENCODE_YOLO=true
           echo "opencode binary: $(command -v opencode)"
           opencode --version || true
-          nohup opencode web --auto --dir /home/runner/workspace --port 4096 --hostname 0.0.0.0 > opencode.log 2>&1 &
+          cd /home/runner/workspace
+          nohup opencode web --port 4096 --hostname 0.0.0.0 > opencode.log 2>&1 &
           echo "opencode web launched (pid $!)"
           sleep 10
           echo "=== opencode.log (early, after 10s) ==="
@@ -111,11 +112,12 @@ jobs:
           echo "============================================"
           echo "OPENCE WEB TUNNEL READY"
           echo "============================================"
-          echo "TUNNEL URL     : $tunnelUrl"
-          echo "OPENCE WEB     : $tunnelUrl"
+          echo "TUNNEL URL     : ${tunnelUrl}?directory=/home/runner/workspace"
+          echo "OPENCE WEB     : ${tunnelUrl}?directory=/home/runner/workspace"
           echo "LOCAL (runner) : http://localhost:4096"
           echo "PROJECT FOLDER : /home/runner/workspace"
           echo "AUTH           : NONE (unsecured)"
+          echo "YOLO           : permissions=allow (config) + OPENCODE_YOLO=true"
           echo "============================================"
 
           while true; do
