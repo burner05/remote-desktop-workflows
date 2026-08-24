@@ -42,7 +42,7 @@ jobs:
 
           code="000"
           for i in $(seq 1 200); do
-            code=$(curl -s -o /dev/null -w "%{http_code}" http://127.0.0.1:20128/ --max-time 2 2>/dev/null || echo "000")
+            code=$(curl -s -o /dev/null -w "%{http_code}" http://127.0.0.1:20128/ --max-time 2 2>/dev/null || true)
             if [ "$code" != "000" ]; then
               echo "9router ready on port 20128 (attempt $i, HTTP $code)"
               break
@@ -332,7 +332,7 @@ jobs:
 
           code="000"
           for i in $(seq 1 200); do
-            code=$(curl -s -o /dev/null -w "%{http_code}" http://127.0.0.1:20128/ --max-time 2 2>/dev/null || echo "000")
+            code=$(curl -s -o /dev/null -w "%{http_code}" http://127.0.0.1:20128/ --max-time 2 2>/dev/null || true)
             if [ "$code" != "000" ]; then
               echo "9router ready (attempt $i, HTTP $code)"
               break
@@ -352,16 +352,16 @@ jobs:
 
           echo ""
           echo "=== TESTING ==="
-          health=$(curl -s -o /dev/null -w "%{http_code}" http://127.0.0.1:20128/api/health --max-time 5 2>/dev/null || echo "000")
+          health=$(curl -s -o /dev/null -w "%{http_code}" http://127.0.0.1:20128/api/health --max-time 5 2>/dev/null || true)
           echo "Health: $health"
 
           echo "Testing /v1/models via proxy (no auth)..."
-          MODELS=$(curl -s http://127.0.0.1:20129/v1/models --max-time 10 2>/dev/null || echo "")
+          MODELS=$(curl -s http://127.0.0.1:20129/v1/models --max-time 10 2>/dev/null || true)
           if echo "$MODELS" | python3 -c "import sys,json; d=json.loads(sys.stdin.read()); print('SUCCESS: /v1/models works WITHOUT auth! Models:', len(d.get('data',[])))" 2>/dev/null; then
             echo "Proxy OK"
           else
             echo "FAILED via proxy. Testing direct..."
-            DIRECT=$(curl -s http://127.0.0.1:20128/v1/models --max-time 10 2>/dev/null || echo "")
+            DIRECT=$(curl -s http://127.0.0.1:20128/v1/models --max-time 10 2>/dev/null || true)
             if echo "$DIRECT" | python3 -c "import sys,json; d=json.loads(sys.stdin.read()); print('Direct OK:', len(d.get('data',[])), 'models')" 2>/dev/null; then
               echo "Direct OK"
             else
